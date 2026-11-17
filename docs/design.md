@@ -214,7 +214,7 @@
 Ни один из трёх проектов не шлёт сырых опкодов: всё работает через публичный API PyMax. Код
 не копировали, ниже только идеи и грабли.
 
-### 2.1 minchiki/tg-max-mcp (локально `~/mcps/tg-max-mcp`, плюс патч `MAX_ONLY`)
+### 2.1 minchiki/tg-max-mcp
 - PyMax `WebClient`, `ExtraConfig(reconnect=False, relogin=False, telemetry=False)`, подкласс с
   `config.interactive=False`, чтобы аккаунт не висел «в сети». Это подтверждает наши решения из 1.3/1.5.
 - Ленивое переподключение под lock: клиент пересоздаётся, если `!is_connected or me is None`.
@@ -744,15 +744,14 @@ max-mcp doctor                # проверка окружения без се�
 - [ ] проверка записи на живом аккаунте — не выполнялась (запрет заказчика); см. `docs/protocol-notes.md`, раздел 5
 
 ### Тред 4 — тесты, CI, README, публикация
-- [ ] полный `FakeMaxAdapter` + фикстуры, тесты из 9.1 (слои 1–5), сетевой страж
-- [ ] контрактные тесты PyMaxAdapter на JSON-фикстурах (обезличенных, синтетических)
-- [ ] `.github/workflows/ci.yml` (+ gitleaks), бейджи
-- [ ] `README.md` (ru) + `README.en.md`: установка (`uvx max-mcp-server`), вход, подключение к Claude Code
-      (stdio и http), переменные, модель безопасности, ограничения, отказ от ответственности (неофициальный
-      клиент, риск блокировки аккаунта)
-- [ ] `CHANGELOG.md` (Keep a Changelog, 0.1.0), `LICENSE` MIT, `SECURITY.md`
-- [ ] проверка репо на персональные данные (gitleaks + grep телефонов/токенов), `uv build`
-- [ ] создание `github.com/artgas1/max-mcp-server` и push — по команде заказчика; PyPI — по решению
+- [x] полный `FakeMaxAdapter` + фикстуры, тесты из 9.1 (слои 1–5), сетевой страж (тред 2–3)
+- [x] контрактные тесты PyMaxAdapter на JSON-фикстурах (`tests/fixtures/pymax/`, `tests/test_pymax_contract.py`)
+- [x] `.github/workflows/ci.yml` (ruff, pytest 3.11–3.13 с порогом покрытия, сборка + проверка dist, gitleaks),
+      `release.yml` (Trusted Publishing, GitHub Release из CHANGELOG), `dependabot.yml`, бейджи
+- [x] `README.md` (ru) + `README.en.md` (он же описание на PyPI)
+- [x] `CHANGELOG.md`, `LICENSE` MIT, `SECURITY.md`, `CONTRIBUTING.md`, шаблоны issue, `server.json` (не опубликован)
+- [x] проверка репо на персональные данные (gitleaks + grep телефонов/токенов), `uv build`
+- [ ] создание `github.com/artgas1/max-mcp-server`, push, PyPI — после ревью безопасности, по команде заказчика
 
 ---
 
@@ -826,4 +825,24 @@ max-mcp doctor                # проверка окружения без се�
 - **Отложено:** проверка всех write-опкодов на живом аккаунте (payload-ы взяты из моделей PyMax 2.5.0,
   ответы — предположение); признак «чужое сообщение» для `for_everyone` (решает сервер MAX);
   `send_callback` не делаем (решение 11.4).
+
+---
+
+## 14. Итоги треда 4 (тесты, CI, публикация)
+
+- **Контракт PyMax на JSON.** `tests/fixtures/pymax/{messages,chats}.json` — синтетические кадры в форме
+  MAX (camelCase) → настоящие модели `pymax.types` → DTO: все типы вложений (включая неизвестный),
+  статусы, реакции, диалог/«Избранное»/группа/канал, участники (presence в с и мс), папки по
+  `foldersOrder`, комментарии, `FileRequest`/`VideoRequest` (ссылка качества из `model_extra`),
+  `LINK_INFO` (user/chat/пусто) и invite-ссылки. Отдельно: токены вложений и `preview_data` не доходят
+  до вывода.
+- **Покрытие:** порог 85 % в `pyproject.toml` (`[tool.coverage]`) по всему пакету; без
+  `PyMaxAdapter` — выше 90 %. Не покрыты в основном интерактивные флоу входа и `probe`/`logout --remote`
+  (без сети не проверить).
+- **Версия** — в одном месте: `src/max_mcp_server/__init__.py` (`dynamic = ["version"]` у hatchling);
+  `server.json` обновляется вручную при релизе (CONTRIBUTING). Релиз проверяет, что тег = версия.
+- **CLI:** `max-mcp-server` — алиас `max-mcp` (для `uvx max-mcp-server`); без подкоманды = `serve` по stdio.
+- **PyPI-описание** — `README.en.md` (абсолютные ссылки на GitHub); в обоих README маркер
+  `mcp-name: io.github.artgas1/max-mcp-server` для проверки владения в MCP Registry.
+- **Actions** закреплены по SHA (с комментарием версии); dependabot не трогает `maxapi-python`.
 
