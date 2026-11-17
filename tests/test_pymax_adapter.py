@@ -117,25 +117,6 @@ def test_map_message_reply_forward_and_chat():
     assert pa.map_message(ev, 42).chat_id == 42
 
 
-def test_check_download_url():
-    sfx = ("oneme.ru", "okcdn.ru")
-    assert pa.check_download_url("https://i.oneme.ru/x", sfx) == "i.oneme.ru"
-    for bad in (
-        "http://i.oneme.ru/x",
-        "https://evil.com/x",
-        "https://oneme.ru.evil.com/",
-        "file:///etc/passwd",
-    ):
-        with pytest.raises(Forbidden):
-            pa.check_download_url(bad, sfx)
-
-
-def test_sniff_mime():
-    assert pa.sniff_mime(b"\x89PNG\r\n\x1a\nxxxx") == "image/png"
-    assert pa.sniff_mime(b"RIFF\x00\x00\x00\x00WEBPVP8 ") == "image/webp"
-    assert pa.sniff_mime(b"????", "text/plain") == "text/plain"
-
-
 async def test_start_without_session_no_network(settings):
     adapter = pa.PyMaxAdapter(settings)
     with pytest.raises(NotLoggedIn):

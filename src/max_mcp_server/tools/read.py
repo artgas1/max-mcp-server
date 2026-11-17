@@ -19,7 +19,9 @@ from pydantic import Field
 from max_mcp_server import __version__
 from max_mcp_server.adapter.base import ChatDTO, MessageDTO
 from max_mcp_server.errors import InvalidArgument, NotFound
-from max_mcp_server.security.untrusted import UNTRUSTED_NOTICE, normalize_text
+from max_mcp_server.security.net import INLINE_IMAGE_MIMES
+from max_mcp_server.security.paths import download_target, safe_filename
+from max_mcp_server.security.untrusted import UNTRUSTED_NOTICE
 from max_mcp_server.serialization import make_ref, parse_ref
 from max_mcp_server.tools.common import (
     ToolDeps,
@@ -685,14 +687,8 @@ class ReadTools:
             raise InvalidArgument(f"Вложение типа {att.kind} нельзя скачать")
         settings = self.d.settings
         url = await self.d.adapter.media_url(chat_id, msg.id, att)
-        safe_name = (
-            "".join(
-                ch if ch.isalnum() or ch in "._-" else "_"
-                for ch in normalize_text(att.name or att.kind)
-            )[:80].lstrip(".")
-            or att.kind
-        )
-        dest = settings.download_path / f"{chat_id}_{msg.id}_{idx}_{safe_name}"
+        base = safe_filename(att.name or att.kind, fallback=att.kind)
+        dest = download_target(settings.download_path, f"{chat_id}_{msg.id}_{idx}_{base}")
         blob = await self.d.adapter.download(url, dest, max_bytes=settings.download_max_bytes)
         info = {
             "ref": make_ref(chat_id, msg.id, idx),
@@ -702,8 +698,10 @@ class ReadTools:
             "sha256": blob.sha256,
         }
         if inline:
-            if not blob.mime.startswith("image/"):
-                raise InvalidArgument("inline=true доступно только для изображений")
+            if blob.mime not in INLINE_IMAGE_MIMES:
+                raise InvalidArgument(
+                    "inline=true доступно только для изображений PNG/JPEG/GIF/WEBP; файл сохранён"
+                )
             if blob.size > settings.inline_image_bytes:
                 raise InvalidArgument(
                     f"Картинка больше {settings.inline_image_bytes} байт — используйте путь из ответа"

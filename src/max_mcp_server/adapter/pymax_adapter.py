@@ -13,16 +13,14 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import hashlib
 import logging
-import os
 import random
 import re
 import time
 from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, TypeVar
-from urllib.parse import urlsplit
 
 from pymax import Client, ExtraConfig, WebClient
 from pymax.auth import QrAuthFlow, SmsAuthFlow
@@ -48,6 +46,9 @@ from max_mcp_server.adapter.base import (
     MediaBlob,
     MemberDTO,
     MessageDTO,
+    OutgoingFile,
+    PollResultDTO,
+    Reactions,
     UserDTO,
 )
 from max_mcp_server.adapter.events import EventBuffer
@@ -64,6 +65,7 @@ from max_mcp_server.errors import (
     UpstreamError,
 )
 from max_mcp_server.logging import pymax_level
+from max_mcp_server.security.net import SafeDownloader, parse_networks
 from max_mcp_server.security.ratelimit import TokenBucket
 from max_mcp_server.session.store import ProfileLock, SecureFileStore, ensure_private_dir
 
@@ -510,38 +512,6 @@ def map_chat(c: Chat, me_id: int | None, names: dict[int, str] | None = None) ->
     )
 
 
-_SIGNATURES: tuple[tuple[bytes, str], ...] = (
-    (b"\x89PNG\r\n\x1a\n", "image/png"),
-    (b"\xff\xd8\xff", "image/jpeg"),
-    (b"GIF87a", "image/gif"),
-    (b"GIF89a", "image/gif"),
-    (b"%PDF-", "application/pdf"),
-    (b"OggS", "audio/ogg"),
-    (b"ID3", "audio/mpeg"),
-)
-
-
-def sniff_mime(head: bytes, fallback: str = "application/octet-stream") -> str:
-    for sig, mime in _SIGNATURES:
-        if head.startswith(sig):
-            return mime
-    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
-        return "image/webp"
-    if head[4:8] == b"ftyp":
-        return "video/mp4"
-    return fallback
-
-
-def check_download_url(url: str, suffixes: Sequence[str]) -> str:
-    parts = urlsplit(url)
-    host = (parts.hostname or "").lower()
-    if parts.scheme != "https" or not host:
-        raise Forbidden("Скачивание разрешено только по https с серверов MAX")
-    if not any(host == s or host.endswith("." + s) for s in suffixes):
-        raise Forbidden(f"Хост {host} не входит в allowlist загрузок MAX (MAX_DOWNLOAD_HOSTS)")
-    return host
-
-
 # ---------------------------------------------------------------------------- адаптер
 
 
@@ -552,6 +522,10 @@ class PyMaxAdapter:
         self._lock = ProfileLock(settings.state_path)
         self._events = EventBuffer()
         self._bucket = TokenBucket(settings.rps, burst=max(2.0, settings.rps * 2))
+        self._downloader = SafeDownloader(
+            host_suffixes=settings.download_host_suffixes,
+            allow_networks=parse_networks(settings.download_allow_ips),
+        )
         self._client: WebClient | Client | None = None
         self._state: AdapterState = "idle"
         self._ready = asyncio.Event()
@@ -959,61 +933,193 @@ class PyMaxAdapter:
         raise InvalidArgument(f"Вложение типа {att.kind} нельзя скачать")
 
     async def download(self, url: str, dest: Path, *, max_bytes: int) -> MediaBlob:
-        """GET с allowlist хостов, без редиректов, с лимитом по потоку. Пишет файл 0600.
-
-        TODO(тред 3): закрепление IP после проверки (DNS rebinding) и запрет private-адресов.
-        """
-        import aiohttp
-
-        check_download_url(url, self.settings.download_host_suffixes)
+        """Скачивание через ``SafeDownloader``: allowlist хостов, только https, проверка и
+        закрепление IP (без private/loopback/link-local), ручные редиректы, лимит по потоку."""
+        self._downloader.check_url(url)
         ensure_private_dir(dest.parent)
         await self._bucket.acquire()
-        tmp = dest.with_name(f".{dest.name}.part")
-        digest = hashlib.sha256()
-        size = 0
-        head = b""
-        timeout = aiohttp.ClientTimeout(total=300, sock_read=60)
-        try:
-            async with (
-                aiohttp.ClientSession(timeout=timeout, trust_env=False) as http,
-                http.get(url, allow_redirects=False) as resp,
-            ):
-                if resp.status != 200:
-                    raise UpstreamError(f"Сервер файлов MAX ответил {resp.status}")
-                if resp.content_length and resp.content_length > max_bytes:
-                    raise InvalidArgument(
-                        f"Файл больше лимита {max_bytes} байт (MAX_DOWNLOAD_MAX_BYTES)"
-                    )
-                fd = os.open(
-                    tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0), 0o600
-                )
-                with os.fdopen(fd, "wb") as fh:
-                    async for chunk in resp.content.iter_chunked(65536):
-                        size += len(chunk)
-                        if size > max_bytes:
-                            raise InvalidArgument(
-                                f"Файл больше лимита {max_bytes} байт (MAX_DOWNLOAD_MAX_BYTES)"
-                            )
-                        if len(head) < 16:
-                            head += chunk[: 16 - len(head)]
-                        digest.update(chunk)
-                        fh.write(chunk)
-                header_mime = (resp.headers.get("Content-Type") or "").split(";")[0].strip()
-            os.replace(tmp, dest)
-        except MaxMcpError:
-            with contextlib.suppress(FileNotFoundError):
-                tmp.unlink()
-            raise
-        except Exception as exc:
-            with contextlib.suppress(FileNotFoundError):
-                tmp.unlink()
-            raise translate_error(exc) from exc
-        mime = sniff_mime(head, header_mime or "application/octet-stream")
-        return MediaBlob(path=dest, size=size, mime=mime, sha256=digest.hexdigest())
+        return await self._downloader.fetch(url, dest, max_bytes=max_bytes)
 
     async def mark_read(self, chat_id: int, message_id: int) -> int:
         state = await self._call(lambda c: c.read_message(message_id, chat_id))
         return int(state.unread)
+
+    # ---------------------------------------------------------------- запись (тред 3)
+
+    async def _chat_type(self, chat_id: int) -> str:
+        chat = self._chat_cache.get(chat_id)
+        if chat is None:
+            chat = await self._call(lambda c: c.get_chat(chat_id))
+            self._chat_cache[chat_id] = chat
+        return map_chat(chat, self._me_id()).type
+
+    @staticmethod
+    def _pymax_files(files: Sequence[OutgoingFile]) -> list[Any]:
+        from pymax.files import File, Photo, Voice
+
+        out: list[Any] = []
+        for f in files:
+            if f.kind == "photo":
+                out.append(Photo(f.data, name=f.name))
+            elif f.kind == "voice":
+                out.append(Voice(f.data, name=f.name, duration=f.duration_ms))
+            else:
+                out.append(File(f.data, name=f.name))
+        return out
+
+    async def send(
+        self,
+        chat_id: int,
+        text: str | None,
+        *,
+        reply_to: int | None = None,
+        notify: bool = True,
+        markdown: bool = False,
+        files: Sequence[OutgoingFile] = (),
+    ) -> MessageDTO:
+        atts = self._pymax_files(files) or None
+        msg = await self._call(
+            lambda c: raw.send_message(
+                c,
+                chat_id,
+                text,
+                reply_to=reply_to,
+                attachments=atts,
+                notify=notify,
+                markdown=markdown,
+            )
+        )
+        return map_message(msg, chat_id)
+
+    async def forward(
+        self, to_chat_id: int, from_chat_id: int, message_ids: Sequence[int], *, notify: bool
+    ) -> list[MessageDTO]:
+        out: list[MessageDTO] = []
+        for mid in message_ids:
+            msg = await self._call(
+                lambda c, mid=mid: raw.forward_message(
+                    c, to_chat_id, from_chat_id, int(mid), notify=notify
+                )
+            )
+            out.append(map_message(msg, to_chat_id))
+        return out
+
+    async def edit(self, chat_id: int, message_id: int, text: str, *, markdown: bool) -> MessageDTO:
+        msg = await self._call(
+            lambda c: raw.edit_message(c, chat_id, message_id, text, markdown=markdown)
+        )
+        return map_message(msg, chat_id)
+
+    async def delete(self, chat_id: int, ids: Sequence[int], *, for_everyone: bool) -> bool:
+        return bool(
+            await self._call(
+                lambda c: c.delete_message(chat_id, [int(i) for i in ids], for_me=not for_everyone)
+            )
+        )
+
+    async def react(self, chat_id: int, message_id: int, reaction: str | None) -> Reactions:
+        if reaction:
+            info = await self._call(lambda c: c.add_reaction(chat_id, message_id, reaction))
+        else:
+            info = await self._call(lambda c: c.remove_reaction(chat_id, message_id))
+        if info is None:
+            return ((), reaction)
+        return (tuple((x.reaction, x.count) for x in info.counters), info.your_reaction)
+
+    async def send_poll(
+        self, chat_id: int, question: str, answers: Sequence[str], *, revote: bool, notify: bool
+    ) -> MessageDTO:
+        from pymax.types.domain.attachments.enums import PollFlags
+        from pymax.types.domain.attachments.poll import Poll, PollAnswer
+
+        # MAX отклоняет anonymous/multiselect/quiz («Invalid poll settings») — только REVOTE
+        flags = PollFlags.FLAG_SETTINGS_REVOTE if revote else PollFlags(0)
+        poll = Poll(title=question, answers=[PollAnswer(text=a) for a in answers], settings=flags)
+        msg = await self._call(
+            lambda c: c.send_message(chat_id, None, attachments=[poll], notify=notify)
+        )
+        return map_message(msg, chat_id)
+
+    async def vote_poll(
+        self, chat_id: int, message_id: int, answer_ids: Sequence[int]
+    ) -> PollResultDTO:
+        msgs = await self._call(lambda c: c.get_messages(chat_id, [message_id]))
+        poll_id: int | None = None
+        for m in msgs or []:
+            for att in m.attaches or []:
+                if _enum_value(getattr(att, "type", "")).upper() == "POLL":
+                    poll_id = int(att.poll_id)
+        if poll_id is None:
+            raise NotFound("В сообщении нет опроса")
+        state = await self._call(
+            lambda c: c.vote_poll(chat_id, message_id, poll_id, [int(a) for a in answer_ids])
+        )
+        return PollResultDTO(
+            total=int(state.total or 0),
+            answers=tuple((r.answer_id, r.vote_count) for r in state.result or ()),
+        )
+
+    async def pin(self, chat_id: int, message_id: int, *, notify: bool) -> bool:
+        return bool(await self._call(lambda c: c.pin_message(chat_id, message_id, notify)))
+
+    async def send_comment(
+        self, chat_id: int, post_id: int, text: str, *, reply_to: int | None, markdown: bool
+    ) -> MessageDTO:
+        msg = await self._call(
+            lambda c: raw.send_message(
+                c, chat_id, text, reply_to=reply_to, markdown=markdown, post_id=post_id
+            )
+        )
+        dto = map_message(msg, chat_id)
+        return dto if dto.post_id is not None else replace(dto, post_id=post_id)
+
+    async def create_group(self, title: str, user_ids: Sequence[int]) -> ChatDTO:
+        res = await self._call(lambda c: c.create_group(title, list(user_ids), notify=True))
+        if res is None:
+            raise UpstreamError("MAX не вернул созданный чат")
+        chat, _msg = res
+        return (await self._map_chats([chat]))[0]
+
+    async def add_members(
+        self, chat_id: int, user_ids: Sequence[int], *, show_history: bool
+    ) -> ChatDTO | None:
+        ids = [int(u) for u in user_ids]
+        if await self._chat_type(chat_id) == "channel":
+            chat = await self._call(
+                lambda c: c.invite_users_to_channel(chat_id, ids, show_history=show_history)
+            )
+        else:
+            chat = await self._call(
+                lambda c: c.invite_users_to_group(chat_id, ids, show_history=show_history)
+            )
+        return (await self._map_chats([chat]))[0] if chat is not None else None
+
+    async def remove_members(self, chat_id: int, user_ids: Sequence[int]) -> bool:
+        ids = [int(u) for u in user_ids]
+        return bool(
+            await self._call(lambda c: c.remove_users_from_group(chat_id, ids, clean_msg_period=0))
+        )
+
+    async def update_group(
+        self, chat_id: int, *, title: str | None, description: str | None
+    ) -> None:
+        await self._call(
+            lambda c: c.change_group_profile(chat_id, name=title, description=description)
+        )
+
+    async def join(self, link: str) -> ChatDTO:
+        link = raw.normalize_public_link(link)
+        if "join/" in link:
+            chat = await self._call(lambda c: c.join_group(link))
+        else:
+            chat = await self._call(lambda c: c.join_channel(link))
+        return (await self._map_chats([chat]))[0]
+
+    async def leave(self, chat_id: int) -> None:
+        if await self._chat_type(chat_id) == "channel":
+            await self._call(lambda c: c.leave_channel(chat_id))
+        else:
+            await self._call(lambda c: c.leave_group(chat_id))
 
 
 # ---------------------------------------------------------------------------- вход (CLI)

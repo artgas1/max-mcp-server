@@ -54,6 +54,8 @@ class Settings(BaseSettings):
     deny_chats: str = ""
 
     rps: float = Field(default=5.0, gt=0, le=50)
+    send_limit: str = "20/h,5/min"
+    allow_join: bool = False
     untrusted_wrap: Literal["tags", "json", "off"] = "tags"
     text_limit: int = Field(default=4000, ge=100, le=100_000)
     tz: str | None = None
@@ -63,6 +65,8 @@ class Settings(BaseSettings):
     download_max_bytes: int = 50 * 1024 * 1024
     inline_image_bytes: int = 1024 * 1024
     download_hosts: str = ""
+    download_allow_ips: str = ""
+    upload_max_bytes: int = Field(default=50 * 1024 * 1024, ge=1)
 
     http_host: str = "127.0.0.1"
     http_port: int = Field(default=13430, ge=1, le=65535)
@@ -71,6 +75,9 @@ class Settings(BaseSettings):
     http_token_file: Path | None = None
     http_allow_nonlocal: bool = False
     http_allowed_origins: str = ""
+    http_allowed_hosts: str = ""
+    http_secret_path: bool = False
+    http_max_body: int = Field(default=1024 * 1024, ge=1024, le=64 * 1024 * 1024)
 
     login_token: str | None = None
     phone: str | None = None
@@ -114,6 +121,19 @@ class Settings(BaseSettings):
         return _xdg("XDG_CACHE_HOME", ".cache") / APP_DIR / self.profile / "media"
 
     @property
+    def upload_path(self) -> Path | None:
+        return self.upload_dir.expanduser() if self.upload_dir is not None else None
+
+    @property
+    def http_token_default_file(self) -> Path:
+        """Файл токена, который создаёт ``max-mcp http-token`` (используется, если он есть)."""
+        return self.state_path / "http_token"
+
+    @property
+    def http_secret_file(self) -> Path:
+        return self.state_path / "http_path_secret"
+
+    @property
     def read_allow(self) -> frozenset[int]:
         return parse_id_list(self.read_chats)
 
@@ -148,6 +168,11 @@ class Settings(BaseSettings):
     def validate_runtime(self) -> None:
         """Проверки, которые нельзя выразить валидаторами полей."""
         _ = self.read_allow, self.write_allow, self.deny, self.timezone
+        from max_mcp_server.security.net import parse_networks
+        from max_mcp_server.security.ratelimit import parse_send_limit
+
+        parse_send_limit(self.send_limit)
+        parse_networks(self.download_allow_ips)
 
 
 # Хосты CDN MAX — предварительно, сверить на живом аккаунте (docs/protocol-notes.md).

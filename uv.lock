@@ -663,6 +663,7 @@ name = "max-mcp-server"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "aiohttp" },
     { name = "maxapi-python" },
     { name = "mcp" },
     { name = "pydantic" },
@@ -682,6 +683,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "aiohttp", specifier = ">=3.9" },
     { name = "maxapi-python", specifier = "==2.5.0" },
     { name = "mcp", specifier = ">=2.3,<3" },
     { name = "pydantic", specifier = ">=2.12" },

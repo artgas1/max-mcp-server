@@ -143,9 +143,28 @@ class LinkTarget:
     user: UserDTO | None = None
 
 
+@dataclass(frozen=True)
+class OutgoingFile:
+    """Файл для отправки: байты уже прочитаны из MAX_UPLOAD_DIR (security/paths.py)."""
+
+    name: str
+    data: bytes = field(repr=False)
+    kind: Literal["photo", "file", "voice"] = "file"
+    duration_ms: int | None = None
+
+
+@dataclass(frozen=True)
+class PollResultDTO:
+    total: int
+    answers: tuple[tuple[int, int], ...] = ()  # (answer_id, votes)
+
+
+Reactions = tuple[tuple[tuple[str, int], ...], str | None]
+
+
 @runtime_checkable
 class MaxAdapter(Protocol):
-    """Всё, что нужно инструментам чтения. Запись добавляет тред 3."""
+    """Всё, что нужно инструментам. Методы записи вызываются только из ``tools/write.py``."""
 
     # жизненный цикл
     async def start(self) -> None: ...
@@ -183,3 +202,43 @@ class MaxAdapter(Protocol):
 
     # единственный метод, меняющий непрочитанное; инструменты чтения его не вызывают
     async def mark_read(self, chat_id: int, message_id: int) -> int: ...
+
+    # запись (тред 3)
+    async def send(
+        self,
+        chat_id: int,
+        text: str | None,
+        *,
+        reply_to: int | None = None,
+        notify: bool = True,
+        markdown: bool = False,
+        files: Sequence[OutgoingFile] = (),
+    ) -> MessageDTO: ...
+    async def forward(
+        self, to_chat_id: int, from_chat_id: int, message_ids: Sequence[int], *, notify: bool
+    ) -> list[MessageDTO]: ...
+    async def edit(
+        self, chat_id: int, message_id: int, text: str, *, markdown: bool
+    ) -> MessageDTO: ...
+    async def delete(self, chat_id: int, ids: Sequence[int], *, for_everyone: bool) -> bool: ...
+    async def react(self, chat_id: int, message_id: int, reaction: str | None) -> Reactions: ...
+    async def send_poll(
+        self, chat_id: int, question: str, answers: Sequence[str], *, revote: bool, notify: bool
+    ) -> MessageDTO: ...
+    async def vote_poll(
+        self, chat_id: int, message_id: int, answer_ids: Sequence[int]
+    ) -> PollResultDTO: ...
+    async def pin(self, chat_id: int, message_id: int, *, notify: bool) -> bool: ...
+    async def send_comment(
+        self, chat_id: int, post_id: int, text: str, *, reply_to: int | None, markdown: bool
+    ) -> MessageDTO: ...
+    async def create_group(self, title: str, user_ids: Sequence[int]) -> ChatDTO: ...
+    async def add_members(
+        self, chat_id: int, user_ids: Sequence[int], *, show_history: bool
+    ) -> ChatDTO | None: ...
+    async def remove_members(self, chat_id: int, user_ids: Sequence[int]) -> bool: ...
+    async def update_group(
+        self, chat_id: int, *, title: str | None, description: str | None
+    ) -> None: ...
+    async def join(self, link: str) -> ChatDTO: ...
+    async def leave(self, chat_id: int) -> None: ...
