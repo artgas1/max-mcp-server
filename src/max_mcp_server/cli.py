@@ -1,4 +1,4 @@
-"""CLI: ``max-mcp serve | login {qr,token,phone} | status | logout | tools | doctor``."""
+"""CLI: ``max-mcp serve | login {qr,token,phone} | status | logout | tools | http-token | doctor``."""
 
 from __future__ import annotations
 
@@ -63,6 +63,13 @@ def _build_parser() -> argparse.ArgumentParser:
     tl = sub.add_parser("tools", help="список инструментов при текущем конфиге")
     tl.add_argument("--json", action="store_true")
     tl.add_argument("--no-read-only", dest="read_only", action="store_false", default=None)
+
+    ht = sub.add_parser("http-token", help="создать токен (и секретный путь) для HTTP-транспорта")
+    ht.add_argument(
+        "--rotate", action="store_true", help="выпустить новый токен (старый перестанет работать)"
+    )
+    ht.add_argument("--rotate-path", action="store_true", help="новый секретный путь")
+    ht.add_argument("--show", action="store_true", help="напечатать сам токен")
 
     sub.add_parser("doctor", help="проверка окружения (без сети)")
     return p
@@ -253,6 +260,26 @@ def cmd_tools(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def cmd_http_token(args: argparse.Namespace) -> int:
+    settings = _settings(args)
+    from max_mcp_server.transport.http import ensure_secret_file, mask_path, resolve_mcp_path
+
+    os.umask(0o077)
+    token_file = settings.http_token_file or settings.http_token_default_file
+    token = ensure_secret_file(token_file, rotate=args.rotate)
+    print(f"Токен HTTP: {token_file} (права 600)")
+    if settings.http_secret_path and args.rotate_path:
+        ensure_secret_file(settings.http_secret_file, rotate=True)
+    path = resolve_mcp_path(settings)
+    shown = path if args.show else mask_path(path, settings)
+    print(f"URL: http://{settings.http_host}:{settings.http_port}{shown}")
+    if args.show:
+        print(f"Authorization: Bearer {token}")
+    else:
+        print("Заголовок: Authorization: Bearer <содержимое файла>; --show — показать")
+    return EXIT_OK
+
+
 def cmd_doctor(args: argparse.Namespace) -> int:
     setup_logging("WARNING")
     checks: list[tuple[str, bool, str]] = []
@@ -319,6 +346,7 @@ COMMANDS = {
     "status": cmd_status,
     "logout": cmd_logout,
     "tools": cmd_tools,
+    "http-token": cmd_http_token,
     "doctor": cmd_doctor,
 }
 

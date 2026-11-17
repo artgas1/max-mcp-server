@@ -60,7 +60,7 @@ def test_http_requires_loopback_and_token(settings, fake):
         build_http_app(
             server, settings.model_copy(update={"http_host": "0.0.0.0", "http_token": "x"})
         )
-    assert build_http_app(server, settings.model_copy(update={"http_token": "x"})) is not None
+    assert build_http_app(server, settings.model_copy(update={"http_token": "x" * 20})) is not None
     tok = settings.state_path.parent / "tok"
     tok.parent.mkdir(parents=True, exist_ok=True)
     tok.write_text("from-file\n")
