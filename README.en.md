@@ -71,6 +71,9 @@ uv tool install max-mcp-server       # or install the max-mcp-server and max-mcp
 pipx install max-mcp-server          # or via pipx
 ```
 
+Dependencies are capped at the next major version; install into a dedicated environment
+(`uv tool install`/`pipx`) and upgrade deliberately. PyMax is pinned to an exact version.
+
 `max-mcp-server` and `max-mcp` are the same command. Linux is supported; macOS should work but has not
 been tested separately; on Windows use WSL.
 
@@ -166,6 +169,19 @@ Cursor / other HTTP-capable clients:
 The HTTP server refuses to start without a token. Binding to a non-loopback address requires
 `MAX_HTTP_ALLOW_NONLOCAL=1` and a token; for remote access prefer an SSH tunnel or a VPN.
 
+**HTTP off loopback: TLS only.** The server speaks plain HTTP: with `MAX_HTTP_ALLOW_NONLOCAL=1` the
+bearer token, your conversations and downloaded images travel in clear text (visible to a LAN
+neighbour or a VPN provider). Keep the server on `127.0.0.1` and use one of:
+
+- an SSH tunnel from the client machine: `ssh -N -L 13430:127.0.0.1:13430 user@server`, then connect
+  the client to `http://127.0.0.1:13430/mcp`;
+- a TLS reverse proxy (Caddy, nginx) on the same server, proxying to `127.0.0.1:13430`; add the
+  proxy's external name to `MAX_HTTP_ALLOWED_HOSTS` / `MAX_HTTP_ALLOWED_ORIGINS`.
+
+**Never use `--insecure-no-auth` on a shared server.** Without a token any process of any user on
+that machine can connect to the loopback port and read your conversations. The flag is for
+single-user machines and debugging only.
+
 ## Tools
 
 ### Read (20, always available)
@@ -208,7 +224,7 @@ The HTTP server refuses to start without a token. Binding to a non-loopback addr
 | `max_vote_poll` | vote in a poll |
 | `max_pin_message` | pin a message |
 | `max_send_comment` | comment on a channel post |
-| `max_create_group` | create a group (not added to the write allowlist) |
+| `max_create_group` | create a group (also needs `MAX_ALLOW_CREATE_GROUP=true` or `MAX_WRITE_CHATS=*`; not added to the write allowlist) |
 | `max_add_members` | add members (without history access by default) |
 | `max_remove_members` | remove members |
 | `max_update_group` | change group title/description |
@@ -234,6 +250,9 @@ a human for confirmation before destructive actions.
 | `MAX_SEND_LIMIT` | `20/h,5/min` | send limit; comma-separated `N/s\|min\|h\|d`, `off` disables |
 | `MAX_RPS` | `5` | global request rate to MAX per second (≤ 50) |
 | `MAX_ALLOW_JOIN` | `false` | allow `max_join_chat` |
+| `MAX_ALLOW_CREATE_GROUP` | `false` | allow `max_create_group` (already allowed with `MAX_WRITE_CHATS=*`) |
+| `MAX_HEAVY_CONCURRENCY` | `2` | how many heavy calls (history scan, search, timeline, unread summary) run at once |
+| `MAX_TOOL_TIMEOUT` | `300` | time limit of a heavy call, s (including waiting in the queue) |
 | `MAX_UNTRUSTED_WRAP` | `tags` | wrapping of third-party text: `tags` \| `json` \| `off` |
 | `MAX_TEXT_LIMIT` | `4000` | message text truncation in output |
 | `MAX_TZ` | system | time zone for dates |
@@ -248,15 +267,15 @@ a human for confirmation before destructive actions.
 | `MAX_HTTP_TOKEN` / `MAX_HTTP_TOKEN_FILE` | `<state>/http_token` | bearer token (≥ 16 chars; a file is preferred) |
 | `MAX_HTTP_SECRET_PATH` | `false` | append a random secret segment to the path |
 | `MAX_HTTP_ALLOWED_ORIGINS` / `MAX_HTTP_ALLOWED_HOSTS` | empty | extra allowed `Origin` / `Host` |
-| `MAX_HTTP_ALLOW_NONLOCAL` | `0` | allow a non-loopback bind address (token required) |
+| `MAX_HTTP_ALLOW_NONLOCAL` | `0` | allow a non-loopback bind address (token required; without a TLS proxy traffic is clear text, see "HTTP") |
 | `MAX_HTTP_MAX_BODY` | `1048576` | request body limit |
 | `MAX_LOGIN_TOKEN` | — | for `login token` only |
 | `MAX_PHONE` | — | for `login phone` only |
 | `MAX_2FA_PASSWORD_FILE` | — | file with the 2FA password (mode 600) |
-| `QR_SVG` | — | where to write the QR as SVG during `login qr` |
+| `QR_SVG` | — | where to write the QR as SVG during `login qr` (deleted after login; never put it in a shared or web-served directory) |
 | `MAX_LOG_LEVEL` | `INFO` | log level (stderr) |
 | `MAX_LOG_CONTENT` | `false` | log message texts and names (debugging only) |
-| `MAX_LOG_PYMAX_DEBUG` | `false` | PyMax DEBUG logs — **print full frames, including the token** |
+| `MAX_LOG_PYMAX_DEBUG` | `false` | DEBUG logs of PyMax, websockets, aiohttp and full tracebacks — **print protocol frames and texts** |
 
 ## Security model
 
@@ -267,23 +286,41 @@ The main risk of an MCP server for a messenger is prompt injection: text of some
   cannot be called.
 - **Allowlists.** `MAX_READ_CHATS`, `MAX_WRITE_CHATS` (empty = writes forbidden everywhere even with
   `MAX_READ_ONLY=false`), `MAX_DENY_CHATS`. Forwarding: the source must be readable, the target must be
-  in the write allowlist. New chats (created or joined) are never added automatically. Events from chats
-  outside the allowlist are dropped on arrival.
+  in the write allowlist. Creating a group needs `MAX_ALLOW_CREATE_GROUP=true` or `MAX_WRITE_CHATS=*`.
+  New chats (created or joined) are never added automatically. Events from chats outside the allowlist
+  are dropped on arrival; with a non-empty `MAX_DENY_CHATS` events without a `chat_id` are dropped too.
+  The deny list hides **a chat, not a person**: the peer of a denied dialog is still visible in contacts,
+  `max_get_users` and shared groups, and messages forwarded from a denied chat into an allowed one are
+  visible as forwards.
 - **Rate limits.** A global `MAX_RPS` for all requests and a separate send limit `MAX_SEND_LIMIT`
-  (5 per minute and 20 per hour by default) — against flooding and bans.
-- **Untrusted text.** Message texts, names and chat titles are wrapped in `<untrusted>…</untrusted>`
-  (nested tags escaped, control and bidi characters stripped); tool descriptions and server instructions
+  (5 per minute and 20 per hour by default) — against flooding and bans. One call scans at most
+  20,000 messages, at most `MAX_HEAVY_CONCURRENCY` heavy calls run at once, each limited by
+  `MAX_TOOL_TIMEOUT`.
+- **Untrusted text.** Message texts, names, usernames, links, reactions and chat titles are wrapped in
+  `<untrusted>…</untrusted>`. Control, bidi and all invisible characters (Unicode Tags, soft hyphen,
+  variation selectors) are stripped; nested tags are escaped, including variants with case,
+  fullwidth brackets, HTML entities and insertions. In `format=compact` every message has its own
+  wrapper and the author (`[me]` for the owner or `[id…]`) is outside it, so a name or text cannot
+  forge "a line from the owner". Downloaded file names are chosen by the server; tool descriptions and server instructions
   tell the model this is data, not instructions. Every write tool says "only on the owner's direct request".
-- **Files and network.** Files can be sent only from `MAX_UPLOAD_DIR` (no symlinks out, no URLs);
+- **Files and network.** Files can be sent only from `MAX_UPLOAD_DIR` (no symlinks out, no URLs; a
+  hard link inside the directory to an outside file would pass — use a dedicated directory only you
+  can write to);
   downloads only from MAX CDNs over https, with IP validation and pinning (no private/loopback), manual
   redirects and a size limit. The server never opens links from messages.
 - **HTTP.** `127.0.0.1` by default, mandatory bearer token (constant-time comparison of SHA-256),
-  `Host`/`Origin` checks against DNS rebinding, body size limit, optional secret path.
+  `Host`/`Origin` checks against DNS rebinding, body size limit (the body is read only after the token
+  check), optional secret path. The server does not terminate TLS: off loopback use a TLS proxy or an
+  SSH tunnel.
 - **Session.** File mode 600 in a 700 directory, umask 077, permissions checked at startup; the token is
-  never passed through the server's environment. The server never logs in interactively and never
+  never passed through the server's environment. Secret files (token, 2FA password) are opened without
+  following symlinks. `status --probe` does not connect while `serve` runs for the same profile. The QR
+  SVG is deleted after login, timeout or Ctrl-C. The server never logs in interactively and never
   deletes the session by itself.
 - **Logs.** stderr only, tokens and phone numbers are masked; message texts are not logged without
-  `MAX_LOG_CONTENT`. Every write action produces an audit line (`audit tool=… chat_id=… ok=…`) without text.
+  `MAX_LOG_CONTENT`. Tracebacks are printed without the exception text and source lines (file, line,
+  function and type only); PyMax, websockets, aiohttp and httpx loggers stay at WARNING or above even
+  with `MAX_LOG_LEVEL=DEBUG`. Every write action produces an audit line (`audit tool=… chat_id=… ok=…`) without text.
 - **No telemetry.** PyMax telemetry, the remote version catalog and automatic re-login are disabled
   (`max-mcp doctor` verifies this). The server talks to MAX servers only.
 
