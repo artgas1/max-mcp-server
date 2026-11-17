@@ -1,0 +1,18 @@
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+# сессии и секреты — никогда в репо
+*.db
+*.sqlite*
+session*.json
+.env
+*.env
+qr*.svg
