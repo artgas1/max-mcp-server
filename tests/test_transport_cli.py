@@ -101,3 +101,14 @@ def test_cli_login_phone_requires_mobile(capsys, monkeypatch, tmp_path):
     assert main(["login", "phone", "--phone", "+70000000000"]) == 3
     assert "MAX_CLIENT=mobile" in capsys.readouterr().err
     assert main(["login", "token"]) == 3
+
+
+def test_no_subcommand_means_serve_stdio(monkeypatch):
+    """`uvx max-mcp-server` без аргументов (как в конфигах MCP-клиентов) = `serve` по stdio."""
+    import max_mcp_server.cli as cli
+
+    seen = []
+    monkeypatch.setitem(cli.COMMANDS, "serve", lambda a: seen.append(a) or 0)
+    assert main([]) == 0
+    assert main(["--profile", "work"]) == 0
+    assert [a.transport for a in seen] == ["stdio", "stdio"] and seen[1].profile == "work"

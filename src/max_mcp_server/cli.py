@@ -25,7 +25,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="max-mcp", description="MCP-сервер для мессенджера MAX")
     p.add_argument("--version", action="version", version=f"max-mcp-server {__version__}")
     p.add_argument("--profile", help="профиль (MAX_PROFILE)")
-    sub = p.add_subparsers(dest="cmd", required=True)
+    sub = p.add_subparsers(dest="cmd")  # без команды — serve (stdio)
 
     s = sub.add_parser("serve", help="запустить MCP-сервер")
     s.add_argument("--transport", choices=["stdio", "http"], default="stdio")
@@ -352,7 +352,12 @@ COMMANDS = {
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    args = _build_parser().parse_args(argv)
+    parser = _build_parser()
+    argv = list(sys.argv[1:] if argv is None else argv)
+    args = parser.parse_args(argv)
+    if args.cmd is None:
+        # `uvx max-mcp-server` в конфиге MCP-клиента без аргументов = `serve` по stdio
+        args = parser.parse_args([*argv, "serve"])
     try:
         return COMMANDS[args.cmd](args)
     except NotLoggedIn as exc:
