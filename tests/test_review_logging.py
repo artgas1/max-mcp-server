@@ -42,7 +42,7 @@ def test_m3_traceback_text_hidden(monkeypatch):
     out = buf.getvalue()
     assert "failed to dispatch inbound frame" in out and "builtins.ValueError" in out
     assert "builtins.KeyError" in out and "_raise_with_payload" in out
-    for leak in (SECRET, "9991234567", "секрет", "встречаемся", "raise ValueError", "70000001122"):
+    for leak in (SECRET, "0001234567", "секрет", "встречаемся", "raise ValueError", "70000001122"):
         assert leak not in out
 
 
@@ -80,7 +80,7 @@ def test_m3_third_party_loggers_pinned_even_at_debug(name):
 
 
 def test_m3_redacts_bare_russian_phones_not_ids():
-    assert redact("phone 70001234567 / 89991234567") == "phone <phone> / <phone>"
+    assert redact("phone 70001234567 / 80001234567") == "phone <phone> / <phone>"
     assert redact("chat -71234567890 user 7123456789 t 1795413693000") == (
         "chat -71234567890 user 7123456789 t 1795413693000"
     )
