@@ -92,6 +92,9 @@ class Settings(BaseSettings):
     log_content: bool = False
     log_pymax_debug: bool = False
 
+    heavy_concurrency: int = Field(default=2, ge=1, le=16)
+    tool_timeout: float = Field(default=300.0, ge=1, le=3600)
+
     request_timeout: float = Field(default=30.0, gt=0, le=300)
     connect_timeout: float = Field(default=20.0, gt=0, le=300)
 

@@ -8,14 +8,16 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import getpass
+import os
+import stat
 import sys
 from pathlib import Path
 from typing import TextIO
 
-from max_mcp_server.errors import ConfigError
+from max_mcp_server.errors import ConfigError, InsecurePermissions
 from max_mcp_server.session.qr import render_ascii, write_svg
-from max_mcp_server.session.store import check_private_file
 
 QR_HINT = (
     "Телефон: MAX → Настройки → Устройства → «Подключить устройство» → отсканируйте QR.\n"
@@ -37,19 +39,62 @@ class TerminalQrHandler:
             self.out.write("\x1b[2J\x1b[H")
         render_ascii(qr_url, self.out)
         if self.svg_path is not None:
+            if self.shown == 1:
+                self._warn_shared_dir()
             write_svg(qr_url, self.svg_path)
             self.out.write(f"\nQR также записан в {self.svg_path}\n")
         self.out.write("\n" + QR_HINT + "\n")
         self.out.flush()
 
+    def _warn_shared_dir(self) -> None:
+        assert self.svg_path is not None
+        parent = self.svg_path.expanduser().parent
+        with contextlib.suppress(OSError):
+            if stat.S_IMODE(parent.stat().st_mode) & 0o077:
+                self.out.write(
+                    f"ВНИМАНИЕ: каталог {parent} доступен другим пользователям. QR — это вход в "
+                    "аккаунт: не раздавайте SVG через веб-сервер и общие каталоги.\n"
+                )
+
+    def cleanup(self) -> None:
+        """Удаляет SVG после входа, тайм-аута или Ctrl-C (L5)."""
+        if self.svg_path is not None:
+            with contextlib.suppress(OSError):
+                self.svg_path.expanduser().unlink(missing_ok=True)
+
+
+MAX_SECRET_BYTES = 64 * 1024
+
 
 def read_secret_file(path: Path) -> str:
-    """Читает секрет из файла с правами 600 (не шире)."""
+    """Читает секрет из файла с правами 600 (не шире).
+
+    Без TOCTOU (L6): файл открывается с ``O_NOFOLLOW`` (symlink → отказ), а владелец, тип и
+    права проверяются ``fstat`` уже открытого дескриптора — подмена после проверки не поможет."""
     path = path.expanduser()
-    if not path.exists():
-        raise ConfigError(f"Файл {path} не найден")
-    check_private_file(path)
-    value = path.read_text(encoding="utf-8").strip()
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    try:
+        fd = os.open(path, flags)
+    except FileNotFoundError as exc:
+        raise ConfigError(f"Файл {path} не найден") from exc
+    except OSError as exc:  # ELOOP: символьная ссылка
+        raise InsecurePermissions(f"{path}: не удалось открыть без перехода по ссылке") from exc
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise InsecurePermissions(f"{path} — не обычный файл")
+        if st.st_uid != os.getuid():
+            raise InsecurePermissions(f"Файл {path} принадлежит другому пользователю")
+        if stat.S_IMODE(st.st_mode) & 0o077:
+            raise InsecurePermissions(
+                f"Файл {path} доступен другим (права {oct(stat.S_IMODE(st.st_mode))}); нужно 600"
+            )
+        data = os.read(fd, MAX_SECRET_BYTES + 1)
+    finally:
+        os.close(fd)
+    if len(data) > MAX_SECRET_BYTES:
+        raise ConfigError(f"Файл {path} слишком большой для секрета")
+    value = data.decode("utf-8").strip()
     if not value:
         raise ConfigError(f"Файл {path} пуст")
     return value

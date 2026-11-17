@@ -22,6 +22,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, TypeVar
 
+from pydantic import ValidationError as PydanticValidationError
 from pymax import Client, ExtraConfig, WebClient
 from pymax.auth import QrAuthFlow, SmsAuthFlow
 from pymax.auth.models import AuthResult
@@ -67,6 +68,7 @@ from max_mcp_server.errors import (
 from max_mcp_server.logging import pymax_level
 from max_mcp_server.security.net import SafeDownloader, parse_networks
 from max_mcp_server.security.ratelimit import TokenBucket
+from max_mcp_server.security.untrusted import wrap
 from max_mcp_server.session.store import ProfileLock, SecureFileStore, ensure_private_dir
 
 log = logging.getLogger("max_mcp_server.adapter")
@@ -117,7 +119,14 @@ def translate_error(exc: BaseException) -> MaxMcpError:
     if isinstance(exc, ConnectionError | OSError | EOFError):
         return UpstreamError("Нет соединения с MAX; идёт переподключение.", retryable=True)
     if isinstance(exc, ValueError):
-        return InvalidArgument(f"Неверный аргумент: {str(exc)[:200]}")
+        # str(exc) у pydantic ValidationError содержит куски входящего кадра (чужие тексты):
+        # модели — только тип, подробности — в лог (без текста, см. SafeFormatter)
+        log.info("adapter ValueError: %s", type(exc).__name__)
+        if isinstance(exc, PydanticValidationError):
+            return InvalidArgument(
+                "MAX: неожиданный формат данных (ValidationError); проверьте параметры запроса"
+            )
+        return InvalidArgument(f"Неверный аргумент: {wrap(str(exc)[:120])}")
     if isinstance(exc, RuntimeError) and "expired" in str(exc).lower():
         return UpstreamError("QR-код истёк до подтверждения.")
     if isinstance(exc, PyMaxError):
@@ -1217,7 +1226,16 @@ async def login_phone(
 
 
 async def probe_session(settings: Settings, *, timeout: float = 30) -> UserDTO:
-    """Пробное подключение существующей сессией (для status/doctor). Ничего не меняет."""
+    """Пробное подключение существующей сессией (для ``status --probe``).
+
+    Берёт ``ProfileLock`` неблокирующе (L3): если профиль занят (работает ``serve``), второе
+    соединение тем же токеном и device_id не открывается — ``ProfileLocked``. Под блокировкой
+    мост может сохранить новый токен, если MAX его выдаст: гонки с ``serve`` нет."""
+    with ProfileLock(settings.state_path):
+        return await _probe_locked(settings, timeout=timeout)
+
+
+async def _probe_locked(settings: Settings, *, timeout: float) -> UserDTO:
     store = SecureFileStore(settings.state_path)
     record = store.read()
     if record is None:

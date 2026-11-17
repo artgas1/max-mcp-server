@@ -6,6 +6,7 @@ CDN-ссылок; всё, что написали другие люди, — ч�
 
 from __future__ import annotations
 
+import unicodedata
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, tzinfo
@@ -96,13 +97,33 @@ class Serializer:
     def short_time(self, ms: int) -> str:
         return datetime.fromtimestamp(ms / 1000, tz=self.tz).strftime("%Y-%m-%d %H:%M")
 
+    def reaction(self, value: str) -> Any:
+        """Реакция приходит от MAX строкой: короткое эмодзи — как есть, иначе — untrusted (L1)."""
+        clean = normalize_text(value)
+        if 0 < len(clean) <= 16 and not any(unicodedata.category(ch)[0] in "LN" for ch in clean):
+            return clean
+        return self.u(truncate(clean, 64)[0])
+
+    def reactions(self, counters: Sequence[tuple[str, int]]) -> list[list[Any]]:
+        return [[self.reaction(r), n] for r, n in counters]
+
+    def _event_value(self, value: Any) -> Any:
+        """Данные события: числа и флаги как есть, любые строки — через ``reaction``/``wrap``."""
+        if isinstance(value, str):
+            return self.reaction(value)
+        if isinstance(value, Mapping):
+            return {str(k): self._event_value(v) for k, v in value.items()}
+        if isinstance(value, list | tuple):
+            return [self._event_value(v) for v in value]
+        return scrub(value)
+
     # --- пользователи и чаты --------------------------------------------------
 
     def user(self, u: UserDTO, *, show_phone: bool = False) -> dict[str, Any]:
         out: dict[str, Any] = {
             "id": u.id,
             "name": self.u(u.name),
-            "username": u.username,
+            "username": self.u(u.username) if u.username else None,
             "is_bot": u.is_bot,
             "is_me": u.id == self.me_id if self.me_id is not None else None,
         }
@@ -143,7 +164,7 @@ class Serializer:
         if detailed:
             out.update(
                 description=self.u(c.description) if c.description else None,
-                link=c.link,
+                link=self.u(c.link) if c.link else None,
                 owner_id=c.owner_id,
                 admin_ids=list(c.admin_ids),
                 messages_count=c.messages_count,
@@ -243,9 +264,9 @@ class Serializer:
         if m.attachments:
             out["attachments"] = [self.attachment(a, m) for a in m.attachments]
         if m.reactions:
-            out["reactions"] = [[r, n] for r, n in m.reactions]
+            out["reactions"] = self.reactions(m.reactions)
         if m.my_reaction:
-            out["my_reaction"] = m.my_reaction
+            out["my_reaction"] = self.reaction(m.my_reaction)
         return scrub(out)
 
     def message_brief(self, m: MessageDTO) -> dict[str, Any]:
@@ -324,5 +345,5 @@ class Serializer:
         if e.message is not None:
             out["message"] = self.message(e.message)
         if e.data:
-            out["data"] = scrub(dict(e.data))
+            out["data"] = self._event_value(dict(e.data))
         return out

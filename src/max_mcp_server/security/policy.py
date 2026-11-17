@@ -35,8 +35,9 @@ class Policy:
 
     def can_read(self, chat_id: int | None) -> bool:
         if chat_id is None:
-            # событие без chat_id (например, присутствие) — пропускаем только без allowlist
-            return not self.read_allow
+            # событие без chat_id (например, удаление без поля чата): пропускаем, только если нет
+            # ни allowlist, ни deny-list — иначе нельзя доказать, что оно не из скрытого чата (L8)
+            return not self.read_allow and not self.deny
         if chat_id in self.deny:
             return False
         return not self.read_allow or chat_id in self.read_allow

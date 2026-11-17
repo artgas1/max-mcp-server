@@ -167,6 +167,17 @@ class ProfileLock:
     def held(self) -> bool:
         return self._fd is not None
 
+    def busy(self) -> bool:
+        """Занят ли профиль другим процессом (например, работает ``serve``)."""
+        if self.held:
+            return False
+        try:
+            self.acquire()
+        except ProfileLocked:
+            return True
+        self.release()
+        return False
+
     def __enter__(self) -> ProfileLock:
         self.acquire()
         return self

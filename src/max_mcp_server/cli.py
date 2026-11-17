@@ -13,7 +13,14 @@ from typing import Any
 
 from max_mcp_server import __version__
 from max_mcp_server.config import Settings, load_settings
-from max_mcp_server.errors import EXIT_CONFIG, EXIT_NO_SESSION, EXIT_OK, MaxMcpError, NotLoggedIn
+from max_mcp_server.errors import (
+    EXIT_CONFIG,
+    EXIT_NO_SESSION,
+    EXIT_OK,
+    MaxMcpError,
+    NotLoggedIn,
+    ProfileLocked,
+)
 from max_mcp_server.logging import setup_logging
 
 
@@ -136,9 +143,11 @@ def cmd_login(args: argparse.Namespace) -> int:
             from pathlib import Path
 
             svg = Path(args.svg) if args.svg else settings.qr_svg
-            me = asyncio.run(
-                pa.login_qr(settings, TerminalQrHandler(svg), pwd, timeout=args.timeout)
-            )
+            handler = TerminalQrHandler(svg)
+            try:
+                me = asyncio.run(pa.login_qr(settings, handler, pwd, timeout=args.timeout))
+            finally:
+                handler.cleanup()  # QR — ссылка входа в аккаунт: не оставляем на диске (L5)
         elif args.method == "token":
             if args.from_file:
                 from pathlib import Path
@@ -193,6 +202,9 @@ def cmd_status(args: argparse.Namespace) -> int:
             me = asyncio.run(probe_session(settings))
             info["connection"] = "ok"
             info["me_id"] = me.id
+    except ProfileLocked:
+        # serve держит профиль: второе соединение той же сессией не открываем (L3)
+        info["connection"] = "skipped: профиль занят работающим max-mcp serve"
     except MaxMcpError as exc:
         info["error"] = exc.public_message
         code = exc.exit_code
@@ -324,6 +336,10 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         )
     except MaxMcpError as exc:
         checks.append(("права state_dir", False, exc.public_message))
+    from max_mcp_server.session.store import ProfileLock
+
+    busy = settings.state_path.exists() and ProfileLock(settings.state_path).busy()
+    checks.append(("serve", True, "работает (профиль занят)" if busy else "не запущен"))
     checks.append(("режим", True, "только чтение" if settings.read_only else "запись разрешена"))
     checks.append(
         (

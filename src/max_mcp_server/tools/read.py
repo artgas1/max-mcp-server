@@ -6,10 +6,13 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import time
-from collections import Counter
+from collections import Counter, OrderedDict
+from collections.abc import Awaitable, Callable
 from datetime import datetime
-from typing import Annotated, Any, Literal
+from pathlib import PurePath
+from typing import Annotated, Any, Literal, TypeVar
 
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.utilities.types import Image
@@ -18,7 +21,7 @@ from pydantic import Field
 
 from max_mcp_server import __version__
 from max_mcp_server.adapter.base import ChatDTO, MessageDTO
-from max_mcp_server.errors import InvalidArgument, NotFound
+from max_mcp_server.errors import InvalidArgument, NotFound, UpstreamError
 from max_mcp_server.security.net import INLINE_IMAGE_MIMES
 from max_mcp_server.security.paths import download_target, safe_filename
 from max_mcp_server.security.untrusted import UNTRUSTED_NOTICE
@@ -32,6 +35,8 @@ from max_mcp_server.tools.common import (
 )
 from max_mcp_server.tools.cursor import decode_cursor, encode_cursor
 from max_mcp_server.tools.history import MAX_KEY, fold, start_key, text_matcher, walk
+
+T = TypeVar("T")
 
 READ_ANNOTATIONS = ToolAnnotations(
     readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=True
@@ -57,10 +62,34 @@ FormatArg = Annotated[
 CHAT_LIST_PAGES = 10  # не больше 10 страниц fetch_chats за вызов при фильтрации
 SEARCH_CHATS_DEFAULT = 20
 TIMELINE_SCAN = 20_000
+# абсолютный потолок просмотренных сообщений на один вызов (L2): ≈200 запросов CHAT_HISTORY
+SCAN_BUDGET = 20_000
+TIMELINE_CACHE_SIZE = 64
+TIMELINE_CACHE_TTL = 300.0
 
 
 def _now_ms() -> int:
     return int(time.time() * 1000)
+
+
+def heavy(fn: Callable[..., Awaitable[T]]) -> Callable[..., Awaitable[T]]:
+    """Тяжёлый инструмент (длинный скан истории): не больше ``MAX_HEAVY_CONCURRENCY``
+    одновременно и не дольше ``MAX_TOOL_TIMEOUT`` секунд, включая ожидание очереди (L2)."""
+
+    @functools.wraps(fn)
+    async def wrapper(self: ReadTools, *args: Any, **kwargs: Any) -> T:
+        try:
+            async with asyncio.timeout(self.d.settings.tool_timeout):
+                async with self._heavy:
+                    return await fn(self, *args, **kwargs)
+        except TimeoutError as exc:
+            raise UpstreamError(
+                f"Запрос не уложился в {int(self.d.settings.tool_timeout)} с (MAX_TOOL_TIMEOUT): "
+                "сузьте период, уменьшите limit/scan_limit или продолжите по next_cursor",
+                retryable=True,
+            ) from exc
+
+    return wrapper
 
 
 def _chat_kind_ok(c: ChatDTO, type_: str) -> bool:
@@ -72,7 +101,10 @@ class ReadTools:
 
     def __init__(self, deps: ToolDeps) -> None:
         self.d = deps
-        self._timeline_cache: dict[tuple[Any, ...], tuple[float, dict[str, Any]]] = {}
+        self._timeline_cache: OrderedDict[tuple[Any, ...], tuple[float, dict[str, Any]]] = (
+            OrderedDict()
+        )
+        self._heavy = asyncio.Semaphore(deps.settings.heavy_concurrency)
 
     # ------------------------------------------------------------------ профиль
 
@@ -199,6 +231,7 @@ class ReadTools:
             return s.compact(ordered), ordered
         return [s.message(m) for m in ordered], ordered
 
+    @heavy
     async def max_read_messages(
         self,
         chat_id: ChatId,
@@ -238,7 +271,7 @@ class ReadTools:
             to_ms=hi,
             want=limit,
             predicate=pred,
-            max_scan=max(limit * 20, 5000) if pred else None,
+            max_scan=min(max(limit * 20, 5000), SCAN_BUDGET) if pred else None,
         )
         body, ordered = await self._page(res.items, format, order)
         has_more = not res.exhausted and res.last_key is not None
@@ -342,6 +375,7 @@ class ReadTools:
         found = {m.id for m in msgs}
         return {"messages": body, "missing": [i for i in ids if i not in found]}
 
+    @heavy
     async def max_chat_timeline(
         self,
         chat_id: ChatId,
@@ -355,7 +389,8 @@ class ReadTools:
         lo, hi = parse_range(date_from, date_to, self.d.tz, _now_ms())
         key = (chat_id, granularity, lo, hi // 60_000)
         cached = self._timeline_cache.get(key)
-        if cached and time.monotonic() - cached[0] < 300:
+        if cached and time.monotonic() - cached[0] < TIMELINE_CACHE_TTL:
+            self._timeline_cache.move_to_end(key)
             return cached[1]
         counts: Counter[str] = Counter()
         fmt = "%Y-%m-%d" if granularity == "day" else "%Y-%m"
@@ -383,9 +418,21 @@ class ReadTools:
             "total": sum(counts.values()),
             "complete": res.exhausted,
         }
-        self._timeline_cache[key] = (time.monotonic(), out)
+        self._remember_timeline(key, out)
         return out
 
+    def _remember_timeline(self, key: tuple[Any, ...], value: dict[str, Any]) -> None:
+        """LRU на ``TIMELINE_CACHE_SIZE`` записей; просроченные вытесняются первыми (L2)."""
+        now = time.monotonic()
+        cache = self._timeline_cache
+        for k in [k for k, (t, _) in cache.items() if now - t >= TIMELINE_CACHE_TTL]:
+            del cache[k]
+        cache[key] = (now, value)
+        cache.move_to_end(key)
+        while len(cache) > TIMELINE_CACHE_SIZE:
+            cache.popitem(last=False)
+
+    @heavy
     async def max_search_messages(
         self,
         query: Annotated[str, Field(min_length=1, max_length=500)],
@@ -478,6 +525,7 @@ class ReadTools:
             "next_cursor": nxt,
         }
 
+    @heavy
     async def max_unread_summary(
         self,
         limit_chats: Annotated[int, Field(ge=1, le=100)] = 30,
@@ -695,8 +743,10 @@ class ReadTools:
             raise InvalidArgument(f"Вложение типа {att.kind} нельзя скачать")
         settings = self.d.settings
         url = await self.d.adapter.media_url(chat_id, msg.id, att)
-        base = safe_filename(att.name or att.kind, fallback=att.kind)
-        dest = download_target(settings.download_path, f"{chat_id}_{msg.id}_{idx}_{base}")
+        # имя файла задаёт сервер: чужое имя вложения в путь не попадает (L1), только расширение
+        suffix = PurePath(safe_filename(att.name or "", fallback="x")).suffix[1:11]
+        ext = f".{suffix}" if suffix.isascii() and suffix.isalnum() else ""
+        dest = download_target(settings.download_path, f"{chat_id}_{msg.id}_{idx}_{att.kind}{ext}")
         blob = await self.d.adapter.download(url, dest, max_bytes=settings.download_max_bytes)
         info = {
             "ref": make_ref(chat_id, msg.id, idx),
@@ -766,9 +816,14 @@ class ReadTools:
         self.d.policy.check_read(chat_id)
         ids = unique_ints(message_ids, max_items=100, name="message_ids")
         data = await self.d.adapter.reactions(chat_id, ids)
+        s = await self.d.serializer()
         return {
             "reactions": [
-                {"message_id": mid, "counters": [[r, n] for r, n in counters], "my_reaction": mine}
+                {
+                    "message_id": mid,
+                    "counters": s.reactions(counters),
+                    "my_reaction": s.reaction(mine) if mine else None,
+                }
                 for mid, (counters, mine) in sorted(data.items())
             ]
         }
