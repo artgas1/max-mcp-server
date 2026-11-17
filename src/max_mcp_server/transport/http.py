@@ -272,14 +272,23 @@ def build_http_app(
         host=host,
         max_request_body_size=settings.http_max_body,
     )
+    # порядок снаружи внутрь: Host/Origin → Bearer → лимит тела → MCP. Тело (до 1 МБ)
+    # буферизуется только после проверки токена (I4, security-review)
+    app = BodyLimit(app, settings.http_max_body)
     if token is not None:
         app = BearerAuth(app, token)
     else:
         log.warning(
-            "HTTP без авторизации (--insecure-no-auth): любой локальный процесс получит доступ к MAX"
+            "HTTP без авторизации (--insecure-no-auth): любой локальный процесс (и любой "
+            "пользователь этой машины) получит доступ к MAX; никогда не используйте на общем сервере"
         )
-    app = BodyLimit(app, settings.http_max_body)
     app = HostOriginGuard(app, hosts=hosts, origins=origins)
+    if not local:
+        log.warning(
+            "HTTP слушает %s без TLS: токен и переписка идут открытым текстом. Ставьте перед "
+            "сервером TLS-прокси или SSH-туннель (README, «HTTP вне loopback»)",
+            host,
+        )
     log.info("HTTP: http://%s:%s%s", host, settings.http_port, mask_path(path, settings))
     return app
 

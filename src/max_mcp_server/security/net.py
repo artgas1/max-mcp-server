@@ -11,8 +11,8 @@
    явного ``MAX_DOWNLOAD_ALLOW_IPS``. Подключение идёт ровно к проверенным адресам (кэш DNS
    aiohttp выключен, второго резолвинга нет) — это и есть «закрепление» IP.
 3. Редиректы не следуют автоматически: каждый шаг (не больше 3) заново проходит пункты 1–2.
-4. Размер ограничивается по потоку; файл пишется во временный ``.part`` с ``O_NOFOLLOW`` 0600 и
-   атомарно переименовывается.
+4. Размер ограничивается по потоку; файл пишется во временный ``.<имя>.<random>.part``
+   (``O_EXCL | O_NOFOLLOW``, 0600) и атомарно переименовывается.
 """
 
 from __future__ import annotations
@@ -22,6 +22,7 @@ import contextlib
 import hashlib
 import ipaddress
 import os
+import secrets
 import socket
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -209,7 +210,8 @@ class SafeDownloader:
 
         resolver = VettingResolver(self.allow, self.getaddrinfo)
         self.last_resolver = resolver
-        tmp = dest.with_name(f".{dest.name}.part")
+        # уникальное имя + O_EXCL: параллельные скачивания одного ref не пишут в один файл (I6)
+        tmp = dest.with_name(f".{dest.name}.{secrets.token_hex(8)}.part")
         digest = hashlib.sha256()
         size = 0
         head = b""
@@ -244,7 +246,7 @@ class SafeDownloader:
                             )
                         fd = os.open(
                             tmp,
-                            os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0),
+                            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
                             0o600,
                         )
                         with os.fdopen(fd, "wb") as fh:

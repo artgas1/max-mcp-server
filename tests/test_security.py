@@ -386,3 +386,28 @@ async def test_resolver_dns_failure():
 
     with pytest.raises(UpstreamError):
         await VettingResolver(getaddrinfo=boom).resolve("i.oneme.ru", 443)
+
+
+async def test_concurrent_downloads_use_unique_part_files(local_server, tmp_path, monkeypatch):
+    """I6: .part с уникальным именем и O_EXCL — два скачивания одного ref не мешают друг другу."""
+    import asyncio
+
+    opened: list[tuple[str, int]] = []
+    real_open = os.open
+
+    def spy(path, flags, *a, **k):
+        if str(path).endswith(".part"):
+            opened.append((os.path.basename(path), flags))
+        return real_open(path, flags, *a, **k)
+
+    monkeypatch.setattr(os, "open", spy)
+    d = _local_dl(allow_networks=parse_networks("127.0.0.0/8"))
+    dest = tmp_path / "same.png"
+    a, b = await asyncio.gather(
+        d.fetch(local_server + "/png", dest, max_bytes=1000),
+        d.fetch(local_server + "/png", dest, max_bytes=1000),
+    )
+    assert a.size == b.size == 28 and dest.exists()
+    assert len({name for name, _ in opened}) == 2
+    assert all(flags & os.O_EXCL for _, flags in opened)
+    assert [p.name for p in tmp_path.iterdir()] == ["same.png"]
