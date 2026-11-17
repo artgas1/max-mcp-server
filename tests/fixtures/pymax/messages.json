@@ -1,0 +1,38 @@
+{
+  "_comment": "Синтетические ответы MAX в форме PyMax 2.5.0 (camelCase, как в кадрах). Никаких реальных данных.",
+  "attachments_message": {
+    "id": 501, "chatId": -100, "sender": 2, "text": "", "time": 1735689600000, "type": "USER",
+    "status": "EDITED",
+    "attaches": [
+      {"_type": "PHOTO", "photoId": 11, "baseUrl": "https://i.example.okcdn.ru/p?id=11", "width": 640, "height": 480,
+       "photoToken": "synthetic-photo-token", "previewData": "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAP8="},
+      {"_type": "VIDEO", "videoId": 12, "width": 1280, "height": 720, "duration": 15000,
+       "thumbnail": "https://i.example.okcdn.ru/t?id=12", "token": "synthetic-video-token", "videoType": 0},
+      {"_type": "FILE", "fileId": 13, "name": "report.pdf", "size": 2048, "token": "synthetic-file-token"},
+      {"_type": "AUDIO", "audioId": 14, "duration": 4200, "url": "https://audio.example.oneme.ru/a?id=14",
+       "transcriptionStatus": "SUCCESS", "transcription": "синтетическая расшифровка"},
+      {"_type": "STICKER", "stickerId": 15, "width": 128, "height": 128, "url": "https://st.example.oneme.ru/15",
+       "lottieUrl": null, "setId": 1, "time": 0, "stickerType": "STATIC", "audio": false},
+      {"_type": "CONTACT", "contactId": 16, "firstName": "Синтетический", "lastName": "Контакт"},
+      {"_type": "SHARE", "url": "https://example.org/", "title": "Пример", "description": "описание"},
+      {"_type": "POLL", "pollId": 17, "title": "Вопрос?", "settings": 4, "version": 1,
+       "answers": [{"text": "да", "answerId": 1}, {"text": "нет", "answerId": 2}],
+       "state": {"total": 3, "voterPreviewIds": [],
+                 "result": [{"answerId": 1, "voteCount": 2, "votes": [], "rate": 66, "options": 0},
+                            {"answerId": 2, "voteCount": 1, "votes": [], "rate": 33, "options": 0}]}},
+      {"_type": "CALL", "duration": 60, "conversationId": "c-1", "contactIds": [1, 2], "callType": "AUDIO", "hangupType": "HUNGUP"},
+      {"_type": "SOMETHING_NEW", "foo": "bar"}
+    ],
+    "reactionInfo": {"counters": [{"reaction": "👍", "count": 2}], "totalCount": 2, "yourReaction": "👍"}
+  },
+  "service_message": {
+    "id": 502, "chatId": -100, "sender": 1, "text": "", "time": 1735689601000, "type": "USER",
+    "attaches": [{"_type": "CONTROL", "event": "add", "userIds": [3]}]
+  },
+  "removed_message": {
+    "id": 503, "chatId": -100, "sender": 2, "text": "x", "time": 1735689602000, "type": "USER", "status": "REMOVED"
+  },
+  "comment": {
+    "id": 601, "sender": 3, "text": "комментарий", "time": 1735689700000, "type": "USER"
+  }
+}

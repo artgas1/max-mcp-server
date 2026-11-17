@@ -1,0 +1,35 @@
+{
+  "_comment": "Синтетические чаты, участники, папки, реакции в форме PyMax 2.5.0.",
+  "chats": [
+    {"id": 10, "type": "DIALOG", "status": "ACTIVE", "owner": 1, "participants": {"1": 0, "2": 0},
+     "lastEventTime": 1735689600000, "newMessages": 1,
+     "lastMessage": {"id": 1, "sender": 2, "text": "привет", "time": 1735689600000, "type": "USER"}},
+    {"id": 1, "type": "DIALOG", "status": "ACTIVE", "owner": 1, "participants": {"1": 0},
+     "lastEventTime": 1735689500000},
+    {"id": -100, "type": "CHAT", "status": "ACTIVE", "owner": 1, "title": "Синтетическая группа",
+     "description": "описание группы", "participants": {"1": 0, "2": 0, "3": 0}, "participantsCount": 3,
+     "admins": [2], "lastEventTime": 1735689400000, "messagesCount": 42, "created": 1700000000000,
+     "pinnedMessage": {"id": 7, "sender": 1, "text": "закреп", "time": 1735680000000, "type": "USER"}},
+    {"id": -200, "type": "CHANNEL", "status": "ACTIVE", "owner": 3, "title": "Синтетический канал",
+     "link": "https://max.ru/synthetic_channel", "participantsCount": 1000, "lastEventTime": 1735689300000}
+  ],
+  "members": [
+    {"contact": {"id": 1, "names": [{"name": "Владелец", "type": "ONEME"}]}, "presence": {"seen": 1735689000}},
+    {"contact": {"id": 2, "names": [{"firstName": "Админ", "lastName": "Т"}], "link": "https://max.ru/u/synthetic_admin"},
+     "presence": {"seen": 1735689000000}},
+    {"contact": {"id": 3, "names": [{"name": "Бот"}], "options": ["BOT"]}, "presence": {}}
+  ],
+  "folders": {
+    "foldersOrder": ["f2", "f1"],
+    "folders": [
+      {"id": "f1", "title": "Работа", "include": [-100], "filters": []},
+      {"id": "f2", "title": "Личное", "include": [10], "filters": ["UNREAD"]}
+    ]
+  },
+  "reactions": {"501": {"counters": [{"reaction": "🔥", "count": 3}], "totalCount": 3, "yourReaction": null}},
+  "comments_info": [{"postId": 77, "commentsInfo": {"totalCount": 5}}],
+  "file_request": {"unsafe": true, "url": "https://files.example.oneme.ru/f?id=13"},
+  "video_request": {"url": null, "cache": false, "MP4_720": "https://video.example.okcdn.ru/v?id=12"},
+  "link_info_user": {"user": {"id": 5, "names": [{"name": "Публичный пользователь"}], "link": "https://max.ru/synthetic_user"}},
+  "link_info_chat": {"chat": {"id": -300, "type": "CHANNEL", "status": "ACTIVE", "owner": 5, "title": "Публичный канал"}}
+}
