@@ -258,25 +258,61 @@ class Serializer:
             "attachments": [a.kind for a in m.attachments],
         }
 
-    def compact_line(self, m: MessageDTO) -> str:
-        name = self.names.get(m.sender_id or 0) or (f"id{m.sender_id}" if m.sender_id else "?")
-        if m.sender_id is not None and m.sender_id == self.me_id:
-            name = "я"
-        text, _ = truncate(normalize_text(m.text).replace("\n", " ⏎ "), self.text_limit)
-        parts = [f"[{self.short_time(m.time_ms)}] #{m.id} {normalize_text(name)}: {text}"]
-        if m.forwarded_from is not None:
-            fwd, _ = truncate(normalize_text(m.forwarded_from.text).replace("\n", " "), 300)
-            parts.append(f"[↪ переслано: {fwd}]")
-        if m.attachments:
-            parts.append("[📎 " + ", ".join(a.kind for a in m.attachments) + "]")
+    @staticmethod
+    def _one_line(value: str) -> str:
+        """Текст в одну строку: все переводы строк (в том числе U+2028/U+2029, см.
+        ``normalize_text``) → ``⏎``, чтобы чужой текст не начинал «новую строку» страницы."""
+        return normalize_text(value).replace("\n", " ⏎ ").replace("\t", " ")
+
+    def compact_parts(self, m: MessageDTO) -> tuple[str, str]:
+        """(служебный заголовок, недоверенное тело) одной строки compact-формата.
+
+        Заголовок строит только сервер: время, ``#id`` и автор — ``[me]`` для владельца или
+        ``[id<sender_id>]``. Имя автора и всё, что написали люди, — только в теле. Тело потом
+        оборачивается отдельно для каждого сообщения, поэтому подделать заголовок (и «строку
+        от владельца») из имени или текста нельзя (M1, security-review)."""
+        mine = m.sender_id is not None and m.sender_id == self.me_id
+        who = "[me]" if mine else (f"[id{m.sender_id}]" if m.sender_id is not None else "[?]")
+        head = [f"[{self.short_time(m.time_ms)}] #{m.id} {who}"]
         if m.reply_to is not None:
-            parts.append(f"[↩ {m.reply_to}]")
-        return " ".join(parts)
+            head.append(f"[↩ #{m.reply_to}]")
+        if m.attachments:
+            head.append("[📎 " + ", ".join(a.kind for a in m.attachments) + "]")
+        body: list[str] = []
+        if not mine:
+            name = self.names.get(m.sender_id or 0)
+            if name:
+                body.append(truncate(self._one_line(name), 64)[0] + ":")
+        text, _ = truncate(self._one_line(m.text), self.text_limit)
+        if text:
+            body.append(text)
+        if m.forwarded_from is not None:
+            fwd, _ = truncate(self._one_line(m.forwarded_from.text), 300)
+            body.append(f"[↪ переслано: {fwd}]")
+        return " ".join(head), " ".join(body)
+
+    def compact_line(self, m: MessageDTO) -> str:
+        head, body = self.compact_parts(m)
+        if not body:
+            return head
+        if self.wrap_mode == "off":
+            return f"{head} {body}"
+        return f"{head} {wrap(body, 'tags')}"
 
     def compact(self, messages: Sequence[MessageDTO]) -> Any:
-        """Одна untrusted-обёртка на всю страницу (экономия токенов)."""
-        body = "\n".join(self.compact_line(m) for m in messages)
-        return self.u(body)
+        """Строка на сообщение; у каждой своя untrusted-обёртка, заголовок — вне её.
+
+        ``wrap_mode=json`` → список ``{"h": заголовок, "untrusted": тело}``."""
+        if self.wrap_mode == "json":
+            out: list[dict[str, Any]] = []
+            for m in messages:
+                head, body = self.compact_parts(m)
+                item: dict[str, Any] = {"h": head}
+                if body:
+                    item["untrusted"] = normalize_text(body)
+                out.append(item)
+            return out
+        return "\n".join(self.compact_line(m) for m in messages)
 
     def event(self, e: EventDTO) -> dict[str, Any]:
         out: dict[str, Any] = {

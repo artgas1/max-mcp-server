@@ -186,7 +186,11 @@ async def test_read_messages_compact(make_client):
             )
         )
     assert "text" in p and "messages" not in p
-    assert p["text"].count("<untrusted>") == 1 and p["count"] == 1500
+    lines = p["text"].split("\n")
+    assert len(lines) == p["count"] == 1500
+    # у каждого сообщения своя обёртка; автор — в заголовке вне неё
+    assert all(" <untrusted>" in ln and ln.endswith("</untrusted>") for ln in lines)
+    assert lines[0].split(" <untrusted>")[0].endswith("[me]")
     assert "Алиса Тестова" in p["text"]
 
 
