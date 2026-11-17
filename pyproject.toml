@@ -1,12 +1,16 @@
 [project]
 name = "max-mcp-server"
-version = "0.1.0"
-description = "MCP server for the MAX messenger (max.ru): read your personal chats from Claude and other LLM clients, safe by default"
-readme = "README.md"
+dynamic = ["version"]
+description = "MCP server for MAX messenger (max.ru) personal account: read chats, history, search and media from Claude, Claude Code or Cursor; read-only by default"
+readme = "README.en.md"
 license = "MIT"
 requires-python = ">=3.11"
 authors = [{ name = "artgas1" }]
-keywords = ["mcp", "mcp-server", "model-context-protocol", "max-messenger", "max.ru", "pymax", "claude", "llm"]
+keywords = [
+    "mcp", "mcp-server", "model-context-protocol", "max", "max-messenger", "max.ru", "maxru",
+    "messenger", "pymax", "claude", "claude-code", "cursor", "llm", "ai-agents", "userbot",
+    "chat-history", "read-only",
+]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -17,6 +21,10 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Topic :: Communications :: Chat",
     "Framework :: AsyncIO",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Natural Language :: English",
+    "Natural Language :: Russian",
     "Typing :: Typed",
     "Environment :: Console",
 ]
@@ -35,10 +43,12 @@ dependencies = [
 Homepage = "https://github.com/artgas1/max-mcp-server"
 Repository = "https://github.com/artgas1/max-mcp-server"
 Issues = "https://github.com/artgas1/max-mcp-server/issues"
-Documentation = "https://github.com/artgas1/max-mcp-server/blob/main/docs/design.md"
+Changelog = "https://github.com/artgas1/max-mcp-server/blob/main/CHANGELOG.md"
+Documentation = "https://github.com/artgas1/max-mcp-server#readme"
 
 [project.scripts]
 max-mcp = "max_mcp_server.cli:main"
+max-mcp-server = "max_mcp_server.cli:main"
 
 [dependency-groups]
 dev = [
@@ -46,17 +56,24 @@ dev = [
     "pytest-asyncio>=0.25",
     "ruff>=0.8",
     "httpx>=0.28",
+    "pytest-cov>=7.1.0",
 ]
 
 [build-system]
 requires = ["hatchling>=1.25"]
 build-backend = "hatchling.build"
 
+[tool.hatch.version]
+path = "src/max_mcp_server/__init__.py"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/max_mcp_server"]
 
 [tool.hatch.build.targets.sdist]
-include = ["src/max_mcp_server", "tests", "docs", "pyproject.toml", "README.md", "LICENSE"]
+include = [
+    "src/max_mcp_server", "tests", "docs/*.md", "pyproject.toml", "uv.lock",
+    "README.md", "README.en.md", "CHANGELOG.md", "SECURITY.md", "LICENSE",
+]
 exclude = ["*.db", "session*.json", "*.env"]
 
 [tool.ruff]
@@ -79,6 +96,17 @@ ignore = [
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["max_mcp_server"]
+omit = ["*/max_mcp_server/__main__.py"]
+
+[tool.coverage.report]
+# порог считается по всему пакету, включая PyMaxAdapter; не покрыты в основном
+# интерактивные флоу входа и probe/logout, которые без сети не проверить
+fail_under = 85
+show_missing = true
+skip_covered = true
 
 [tool.ruff.lint.pycodestyle]
 # форматтер держит 100; длинные русские строки сообщений допускаем до 120

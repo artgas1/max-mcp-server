@@ -1,0 +1,49 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.artgas1/max-mcp-server",
+  "title": "MAX messenger",
+  "description": "MAX messenger (max.ru) personal account: read chats, history, search, media. Read-only by default.",
+  "websiteUrl": "https://github.com/artgas1/max-mcp-server",
+  "repository": {
+    "url": "https://github.com/artgas1/max-mcp-server",
+    "source": "github"
+  },
+  "version": "0.1.0",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "registryBaseUrl": "https://pypi.org",
+      "identifier": "max-mcp-server",
+      "version": "0.1.0",
+      "runtimeHint": "uvx",
+      "transport": { "type": "stdio" },
+      "packageArguments": [
+        { "type": "positional", "value": "serve" }
+      ],
+      "environmentVariables": [
+        {
+          "name": "MAX_PROFILE",
+          "description": "Profile name (one MAX account per profile). Log in first: uvx max-mcp-server login qr",
+          "default": "default"
+        },
+        {
+          "name": "MAX_READ_ONLY",
+          "description": "Set to false to register write tools (still need MAX_WRITE_CHATS)",
+          "default": "true"
+        },
+        {
+          "name": "MAX_READ_CHATS",
+          "description": "Read allowlist: comma-separated chat ids (empty = all chats)"
+        },
+        {
+          "name": "MAX_WRITE_CHATS",
+          "description": "Write allowlist: comma-separated chat ids, * for all (empty = no writes)"
+        },
+        {
+          "name": "MAX_TZ",
+          "description": "Time zone for dates, e.g. Europe/Moscow"
+        }
+      ]
+    }
+  ]
+}

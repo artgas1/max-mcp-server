@@ -16,3 +16,5 @@ session*.json
 .env
 *.env
 qr*.svg
+http_token
+http_path_secret
