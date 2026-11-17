@@ -1,6 +1,7 @@
 # max-mcp-server — дизайн (v0.1.0)
 
-Статус: черновик треда 1 «Исследование PyMax + архитектура», 17.11.2026.
+Статус: черновик треда 1 «Исследование PyMax + архитектура», 17.11.2026; дополнен тредом 2
+(ядро, чтение, вход) — изменения отмечены «(тред 2)», сводка в разделе 12.
 Источник фактов о PyMax — исходники `MaxApiTeam/PyMax` на теге `v2.5.0`
 (коммит `c4cb917`, 25.10.2026). Ссылки вида `pymax/infra/message.py` даны относительно `src/`.
 
@@ -495,14 +496,14 @@ class MaxAdapter(Protocol):
 | 1 | `max_get_me` | — | профиль: id, имя, ник, описание; статус соединения, версия сервера, режим (read_only, allowlists — только счётчики) | `client.me` | — |
 | 2 | `max_list_chats` | `limit:int=50`, `cursor:str?`, `type:"all"\|"dialog"\|"group"\|"channel"="all"`, `unread_only:bool=false`, `folder_id:str?`, `query:str?` | чаты: id, тип, название, unread, участников, последнее сообщение (кратко), `next_cursor` | `fetch_chats(marker)` (`CHATS_LIST` 53), курсор = `last_event_time` последнего | limit ≤ 200; `query` — фильтр по названию на нашей стороне |
 | 3 | `max_get_chat` | `chat_id:int` | подробно: описание, ссылка, владелец, админы, закреп, счётчики | `get_chat` (`CHAT_INFO` 48) | — |
-| 4 | `max_list_folders` | — | папки: id, название, chat_ids, число непрочитанных | `get_folders` (`FOLDERS_GET` 272) + чаты | — |
+| 4 | `max_list_folders` | — | папки: id, название, chat_ids (только из read-allowlist), фильтры папки | `get_folders` (`FOLDERS_GET` 272) | (тред 2) без суммы непрочитанного: для неё нужен `CHAT_INFO` по всем чатам папки |
 | 5 | `max_read_messages` | `chat_id:int`, `date_from:str?`, `date_to:str?`, `limit:int=100`, `cursor:str?`, `order:"asc"\|"desc"="asc"`, `sender_id:int?`, `format:"full"\|"compact"="full"` | сообщения + `next_cursor`, `has_more`, фактический диапазон | `fetch_history` (`CHAT_HISTORY` 49, `interactive=False`) страницами по 100 | limit ≤ 1000 за вызов (compact ≤ 5000); глубина не ограничена — курсором |
 | 6 | `max_messages_around` | `chat_id:int`, `date:str` \| `message_id:int`, `before:int=20`, `after:int=20` | сообщения вокруг точки, отметка якоря | `fetch_history(backward, forward, from_time)` | before/after ≤ 200 |
 | 7 | `max_get_messages` | `chat_id:int`, `message_ids:list[int]` | сообщения по id | `get_messages` (`MSG_GET` 71) | ≤ 100 id |
 | 8 | `max_chat_timeline` | `chat_id:int`, `granularity:"day"\|"month"="month"`, `date_from:str?`, `date_to:str?` | гистограмма: период → число сообщений (для навигации по старой переписке) | сканирование `fetch_history` с `get_messages=True` (только время) | ≤ 20 000 сообщений сканирования, кэш на процесс |
 | 9 | `max_search_messages` | `query:str`, `chat_id:int?`, `date_from:str?`, `date_to:str?`, `sender_id:int?`, `limit:int=50`, `cursor:str?`, `scan_limit:int=5000` | найденные сообщения с chat_id + `next_cursor` + `scanned`/`exhausted`; поле `method:"scan"\|"server"` | скан `fetch_history` за период (регистр/ё-нормализация); `MSG_SEARCH` (73) — если подтвердится | без chat_id — скан по N последним активным чатам из read-allowlist (≤ 20 чатов); `scan_limit` ≤ 20 000 |
 | 10 | `max_search_chats` | `query:str`, `limit:int=20` | чаты/контакты по названию/имени | фильтр `fetch_chats` + `CHAT_SEARCH` (68)/`CONTACT_SEARCH` (37) если подтвердится | — |
-| 11 | `max_unread_summary` | `limit_chats:int=30`, `per_chat:int=5`, `folder_id:str?`, `include_muted:bool=false` | чаты с `unread>0` (по `Chat.new_messages`) и последние N непрочитанных в каждом | `fetch_chats` + `fetch_history(backward=min(unread, per_chat), interactive=False)` | **не вызывает `CHAT_MARK`**; per_chat ≤ 50 |
+| 11 | `max_unread_summary` | `limit_chats:int=30`, `per_chat:int=5`, `folder_id:str?` (тред 2: `include_muted` убран до выяснения признака mute, см. protocol-notes) | чаты с `unread>0` (по `Chat.new_messages`) и последние N непрочитанных в каждом | `fetch_chats` + `fetch_history(backward=min(unread, per_chat), interactive=False)` | **не вызывает `CHAT_MARK`**; per_chat ≤ 50 |
 | 12 | `max_list_comments` | `chat_id:int` (канал), `post_id:int`, `limit:int=50`, `cursor:str?` | комментарии поста + `next_cursor`, всего | `fetch_comments` (`CHAT_HISTORY` с post_id), `get_comments_info` (91) | limit ≤ 500 |
 | 13 | `max_list_members` | `chat_id:int`, `limit:int=50`, `cursor:str?` | участники: id, имя, админ, presence | `get_chat_members(marker,count)` (`CHAT_MEMBERS` 59) | limit ≤ 200 |
 | 14 | `max_get_users` | `user_ids:list[int]` | пользователи (без телефонов) | `get_users`/`fetch_users` (`CONTACT_INFO` 32) | ≤ 100 |
@@ -512,6 +513,10 @@ class MaxAdapter(Protocol):
 | 18 | `max_download_media` | `ref:str`, `inline:bool=false` | `{path, size, mime, sha256}` или ImageContent | фото: `base_url`; голос: `AudioAttachment.url`; файл: `get_file_by_id` (`FILE_DOWNLOAD` 88); видео: `get_video_by_id` (`VIDEO_PLAY` 83) | allowlist хостов, ≤ 50 МБ, только в `MAX_DOWNLOAD_DIR` |
 | 19 | `max_wait_updates` | `cursor:str?`, `timeout_s:int=30`, `types:list[str]=["message","edit","delete"]`, `chat_id:int?`, `limit:int=50` | события после курсора + новый курсор; при пустом — ждёт до `timeout_s` | `EventBuffer` ← `on_message/on_message_edit/on_message_delete/on_message_read/on_reaction_update/on_chat_update` | timeout ≤ 120 с; буфер 1000 событий; события из чатов вне read-allowlist отбрасываются на входе |
 | 20 | `max_get_reactions` | `chat_id:int`, `message_ids:list[int]` | реакции по сообщениям | `get_reactions` (`MSG_GET_REACTIONS` 180) | ≤ 100 |
+
+`max_transcribe_voice` (тред 2): **отложен**. В PyMax 2.5.0 есть только номер опкода
+`TRANSCRIBE_MEDIA`(202), метода и модели payload нет; угадывать формат на чужом аккаунте нельзя.
+Сейчас расшифровка отдаётся полем `transcript`, если пришла во вложении. Что проверить — `docs/protocol-notes.md`.
 
 Отложено (после 0.1.0, только если понадобится): сторис (`get_stories_feed`), медиа-галерея чата
 (`CHAT_MEDIA` 51), упоминания (`GET_LAST_MENTIONS` 127), активные сессии (`SESSIONS_INFO`).
@@ -566,6 +571,9 @@ class MaxAdapter(Protocol):
 | `MAX_TEXT_LIMIT` | `4000` | обрезка текста сообщения в выводе |
 | `MAX_TZ` | системная | часовой пояс для дат |
 | `MAX_APPEAR_ONLINE` | `false` | `interactive` в пинге |
+| `MAX_SHOW_OWN_PHONE` | `false` | показывать свой телефон в `max_get_me` (тред 2) |
+| `MAX_DOWNLOAD_HOSTS` | пусто | доп. суффиксы хостов для скачивания к встроенным `oneme.ru,max.ru,okcdn.ru,mycdn.me` (тред 2) |
+| `MAX_REQUEST_TIMEOUT` / `MAX_CONNECT_TIMEOUT` | `30` / `20` | таймаут запроса к MAX и ожидания первого подключения при старте `serve` (тред 2) |
 | `MAX_DOWNLOAD_MAX_BYTES` / `MAX_UPLOAD_MAX_BYTES` | `52428800` | лимиты размера |
 | `MAX_INLINE_IMAGE_BYTES` | `1048576` | лимит inline-картинок |
 | `MAX_HTTP_HOST` | `127.0.0.1` | только loopback; иное — отказ без `MAX_HTTP_ALLOW_NONLOCAL=1` |
@@ -588,11 +596,11 @@ max-mcp serve [--transport stdio|http] [--host 127.0.0.1] [--port 13430] [--read
 max-mcp login qr [--svg PATH] [--timeout 180]       # ASCII-QR в терминал, SVG-файл для веб-страницы
 max-mcp login token [--from-env|--from-file PATH|--stdin]
 max-mcp login phone [--phone +7…]                   # только MAX_CLIENT=mobile
-max-mcp status [--json]       # есть ли сессия, права файлов, пробное подключение, me.id (без имени по умолчанию)
+max-mcp status [--json] [--probe] [--fix-perms]  # сессия, права; --probe — пробное подключение, me.id
 max-mcp logout [--remote]     # удалить локальную сессию; --remote — ещё и LOGOUT на сервере
 max-mcp tools [--json]        # список инструментов при текущем конфиге (проверка read-only)
-max-mcp http-token            # сгенерировать токен в файл 0600 и напечатать путь
-max-mcp doctor                # проверка окружения: права, версии, отключённая телеметрия, сеть до api.oneme.ru
+max-mcp http-token            # (тред 3) сгенерировать токен в файл 0600 и напечатать путь
+max-mcp doctor                # проверка окружения без сети: права, версии, телеметрия/relogin/каталог выключены
 ```
 
 Коды выхода: 0 — ок, 2 — нет сессии/истекла, 3 — ошибка конфигурации, 4 — сеть.
@@ -670,21 +678,23 @@ max-mcp doctor                # проверка окружения: права,
 ## 10. План реализации
 
 ### Тред 2 — ядро, чтение, вход
-- [ ] `pyproject.toml` (hatchling, `max-mcp = "max_mcp_server.cli:main"`, deps: `mcp>=2.3,<3`,
-      `maxapi-python==2.5.0`, `pydantic-settings`, `qrcode`, `uvicorn`, `starlette`), `uv.lock`, `.gitignore`
-- [ ] `config.py`, `logging.py` (RedactingFilter, уровень pymax), `errors.py`
-- [ ] `session/store.py` SecureFileStore + тесты прав
-- [ ] `session/auth.py`, `session/qr.py`: `login qr` (ASCII + `QR_SVG`), `login token`, `login phone`, 2FA из файла
-- [ ] `adapter/base.py` (Protocol + DTO), `adapter/pymax_adapter.py` (WebClient/Client, `telemetry=False`,
-      `relogin=False`, `VersionCatalog(remote=False)`, backoff, lock-файл), `adapter/events.py`
-- [ ] `serialization.py`, `security/untrusted.py`
-- [ ] `tools/read.py`: инструменты 1–20 из 6.1 (поиск — сначала скан истории, затем `MSG_SEARCH` после
-      сверки payload с web-клиентом на реальном аккаунте)
-- [ ] `server.py`, `transport/stdio.py`, `transport/http.py` (базово: 127.0.0.1 + bearer)
-- [ ] `cli.py`: serve/login/status/logout/tools/doctor
-- [ ] ручная проверка на реальном аккаунте (человек логинится сам): собрать реальные коды ошибок
-      (флуд, истёкшая сессия), хосты CDN для allowlist, payload `MSG_SEARCH`/`CONTACT_LIST`; записать в `docs/protocol-notes.md`
-- [ ] `FakeMaxAdapter` минимальный — чтобы тред 3/4 могли писать тесты параллельно
+- [x] `pyproject.toml` (hatchling, `max-mcp = "max_mcp_server.cli:main"`, deps: `mcp>=2.3,<3`,
+      `maxapi-python==2.5.0`, `pydantic-settings`, `qrcode`, `uvicorn`, `starlette`), `uv.lock`, `.gitignore`;
+      метаданные готовы к PyPI (description, keywords, classifiers, urls), `uv build` собирает sdist+wheel
+- [x] `config.py`, `logging.py` (RedactingFilter, уровень pymax), `errors.py`
+- [x] `session/store.py` SecureFileStore + `ProfileLock` + тесты прав
+- [x] `session/auth.py`, `session/qr.py`: провайдеры (QR в терминал + `QR_SVG`, 2FA из файла 600, SMS из TTY);
+      сами флоу `login_qr/login_token/login_phone` — в `adapter/pymax_adapter.py` (правило «PyMax только в adapter/»)
+- [x] `adapter/base.py` (Protocol + DTO), `adapter/pymax_adapter.py` (WebClient/Client, `telemetry=False`,
+      `relogin=False`, `VersionCatalog(remote=False)`, backoff, lock-файл), `adapter/events.py`, `adapter/raw.py`
+- [x] `serialization.py`, `security/untrusted.py`; базовые `security/policy.py` (чтение/deny) и
+      `security/ratelimit.py` (TokenBucket) — тред 3 дополняет записью и SendLimiter
+- [x] `tools/read.py`: 20 инструментов из 6.1 (поиск — скан истории; `MSG_SEARCH` не включён)
+- [x] `server.py`, `transport/stdio.py`, `transport/http.py` (127.0.0.1 + bearer + DNS-rebinding защита SDK)
+- [x] `cli.py`: serve/login/status/logout/tools/doctor
+- [ ] ручная проверка на реальном аккаунте — **не выполнялась** (запрет заказчика); список проверок —
+      `docs/protocol-notes.md`, делается после входа заказчика
+- [x] `FakeMaxAdapter` (полный для чтения, `tests/fakes/fake_adapter.py`) и `fake_pymax.py` для контракта адаптера
 
 ### Тред 3 — запись и безопасность
 - [ ] `security/policy.py` (read/write/deny allowlists), `security/ratelimit.py` (RPS + SendLimiter), `security/paths.py`
@@ -708,10 +718,45 @@ max-mcp doctor                # проверка окружения: права,
 
 ---
 
-## 11. Открытые вопросы к заказчику
+## 11. Открытые вопросы к заказчику (решены 17.11.2026)
 
 1. PyPI: публиковать `max-mcp-server` в 0.1.0 или только GitHub (`uvx --from git+…`)?
 2. Клиент по умолчанию `web` (QR/токен) — ок? SMS-вход через эмуляцию Android оставляем как опцию.
 3. `MAX_APPEAR_ONLINE=false` по умолчанию (не светиться «в сети») — ок?
 4. Нажатие inline-кнопок ботов (`send_callback`) — нужно ли вообще (по умолчанию не делаем)?
 5. Нужен ли инструмент голосового → текст через `TRANSCRIBE_MEDIA` MAX (серверная расшифровка), если подтвердится?
+
+Решения:
+1. 0.1.0 — GitHub (`uvx --from git+https://github.com/artgas1/max-mcp-server max-mcp`) **и PyPI**
+   (пакет `max-mcp-server`); pyproject готов к PyPI.
+2. Да: по умолчанию `web` (QR/токен), SMS — через `MAX_CLIENT=mobile`.
+3. Да: `MAX_APPEAR_ONLINE=false`.
+4. `send_callback` не делаем.
+5. `max_transcribe_voice` — только если в PyMax есть понятный метод; в 2.5.0 его нет → отложено (6.1).
+
+---
+
+## 12. Итоги треда 2 (что изменилось относительно плана)
+
+- **Вход и запись сессии.** Сессия пишется на диск только после успешного `LOGIN` (in-memory
+  `PendingStore` на время входа) — грабля «пустой max.db» исключена. `login` берёт lock профиля, поэтому
+  не конкурирует с работающим `serve`. В `serve` используется сохранённый `client_kind`, а не `MAX_CLIENT`.
+- **`interactive`.** `ExtraConfig` PyMax 2.5.0 не прокидывает `interactive` в `ClientConfig`; наши
+  `QuietWebClient`/`QuietMobileClient` выставляют его (и `telemetry=False`, `relogin=False`) в
+  `_prepare_config`.
+- **Жизненный цикл.** `client.start()` с `reconnect=False` в фоновой задаче; на каждое переподключение —
+  новый клиент; backoff 1→60 с ×(0.7–1.3), сброс после 2 минут стабильной работы. Отзыв сессии →
+  состояние `expired`, переподключения прекращаются. Нет сессии при старте `serve` — сервер всё равно
+  поднимается, инструменты отвечают `[not_logged_in] … max-mcp login qr`.
+- **Курсоры истории.** Граница — ключ `(time_ms, id)`, HMAC-курсор с ключом на процесс (курсоры не
+  переживают перезапуск). `max_read_messages` без `date_from` отдаёт последние сообщения и листает к
+  старым; с `date_from` и `order=asc` — от начала периода вперёд.
+- **Вложения комментариев** не получают `ref` (для них нет `MSG_GET`); остальные — `max-att:<chat>:<msg>:<idx>`.
+- **Скачивание** (`max_download_media`) сделано базово: allowlist суффиксов, только https, без
+  редиректов, лимит по потоку, файл 0600 в `MAX_DOWNLOAD_DIR`. Закрепление IP/запрет private-адресов —
+  тред 3.
+- **Инструменты записи** не регистрируются никогда, пока нет `tools/write.py` (тред 3), даже при
+  `MAX_READ_ONLY=false`.
+- **Тесты**: сетевой страж в `tests/conftest.py` (сокеты и DNS наружу → падение), stdio-сервер в
+  подпроцессе, регрессия bytes в `preview_data` на настоящих моделях PyMax.
+
