@@ -1,0 +1,26 @@
+name: Feature request / Предложение
+description: Suggest a tool or an improvement / Предложить инструмент или улучшение
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ⚠️ Do not paste tokens, phone numbers, real names, chat titles or message texts.
+        ⚠️ Не вставляйте токены, телефоны, имена, названия чатов и тексты сообщений.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Use case / Задача
+      description: What do you want to do with MAX from your LLM client? / Что хотите делать?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal / Предложение
+      description: Tool name, parameters, read or write / Имя, параметры, чтение или запись
+  - type: textarea
+    id: protocol
+    attributes:
+      label: Protocol details (optional) / Детали протокола
+      description: Opcode and payload shape if known — synthetic values only / Опкод и форма payload — только синтетические значения

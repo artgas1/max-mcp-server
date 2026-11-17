@@ -1,0 +1,48 @@
+name: Bug report / Ошибка
+description: Something does not work as documented / Что-то работает не так
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ⚠️ **Do not paste tokens, `session.json`, HTTP tokens, phone numbers, real names, chat titles or message texts.**
+        Replace them with placeholders (`+70000000000`, `<chat>`, `<token>`).
+        ⚠️ **Не вставляйте токены, `session.json`, телефоны, имена, названия чатов и тексты сообщений** — замените заглушками.
+        Security issues: use [Security Advisories](https://github.com/artgas1/max-mcp-server/security/advisories/new).
+  - type: input
+    id: version
+    attributes:
+      label: Version / Версия
+      description: "`max-mcp --version`"
+    validations:
+      required: true
+  - type: dropdown
+    id: client
+    attributes:
+      label: MCP client / Клиент
+      options: [Claude Code, Claude Desktop, Cursor, Other]
+  - type: dropdown
+    id: transport
+    attributes:
+      label: Transport
+      options: [stdio, http]
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened / Что произошло
+      description: Steps, expected and actual result / Шаги, ожидание и результат
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs (redacted) / Логи (обезличенные)
+      description: "stderr with `MAX_LOG_LEVEL=INFO` (never `MAX_LOG_PYMAX_DEBUG` — it prints the token)"
+      render: text
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy
+      options:
+        - label: I removed tokens, phone numbers, names, chat titles and message texts / Я убрал(а) личные данные
+          required: true
