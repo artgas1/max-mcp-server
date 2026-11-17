@@ -1,8 +1,9 @@
-"""Общее для инструментов: перевод ошибок в ToolError, разбор дат, зависимости."""
+"""Общее для инструментов: tool_guard (политика, лимиты, ошибки, аудит), разбор дат, зависимости."""
 
 from __future__ import annotations
 
 import functools
+import inspect
 import logging
 import re
 from collections.abc import Awaitable, Callable, Iterable
@@ -14,8 +15,16 @@ from mcp.server.mcpserver.exceptions import ToolError
 
 from max_mcp_server.adapter.base import MaxAdapter, MessageDTO
 from max_mcp_server.config import Settings
-from max_mcp_server.errors import InvalidArgument, MaxMcpError
+from max_mcp_server.errors import (
+    Forbidden,
+    InvalidArgument,
+    MaxMcpError,
+    NotFound,
+    NotLoggedIn,
+    SessionExpired,
+)
 from max_mcp_server.security.policy import Policy
+from max_mcp_server.security.ratelimit import SendLimiter
 from max_mcp_server.serialization import Serializer
 
 log = logging.getLogger("max_mcp_server.tools")
@@ -23,28 +32,133 @@ P = ParamSpec("P")
 R = TypeVar("R")
 
 
-def tool_guard(name: str) -> Callable[[Callable[P, Awaitable[R]]], Callable[P, Awaitable[R]]]:
-    """Наши исключения → понятный ToolError; прочие → общий текст без внутренностей."""
+AUDIT_ARGS = (
+    "chat_id",
+    "from_chat_id",
+    "to_chat_id",
+    "post_id",
+    "message_id",
+    "message_ids",
+    "user_ids",
+    "answer_ids",
+    "reply_to",
+)
+audit_log = logging.getLogger("max_mcp_server.audit")
+
+
+@dataclass(frozen=True)
+class WriteSpec:
+    """Что проверить до вызова адаптера (design.md, 8.2). Проверки идут ДО любого запроса к MAX."""
+
+    write_chat: str | None = "chat_id"  # аргумент: чат должен быть в write-allowlist
+    read_chat: str | None = None  # аргумент: чат-источник должен быть читаемым (forward)
+    sends: bool = False  # занимает слот SendLimiter
+    sends_per: str | None = None  # аргумент-список: по слоту на элемент (пересылка)
+    join: bool = False  # нужен MAX_ALLOW_JOIN
+    no_chat: bool = False  # действие без существующего чата (create_group)
+
+
+def _error_text(exc: MaxMcpError) -> str:
+    text = f"[{exc.code}] {exc.public_message}"
+    retry_after = getattr(exc, "retry_after", None)
+    if retry_after:
+        text += f" (retry_after={int(retry_after)} с)"
+    return text
+
+
+def _audit(name: str, bound: dict[str, Any], ok: bool, err: str | None, *, content: bool) -> None:
+    parts = [f"audit tool={name}"]
+    for key in AUDIT_ARGS:
+        val = bound.get(key)
+        if val is not None:
+            parts.append(f"{key}={val}")
+    text = bound.get("text") if "text" in bound else bound.get("question")
+    if isinstance(text, str):
+        parts.append(f"text_len={len(text)}")
+        if content:
+            parts.append(f"text={text[:200]!r}")
+    parts.append(f"ok={'true' if ok else 'false'}")
+    if err:
+        parts.append(f"error={err}")
+    audit_log.info(" ".join(parts))
+
+
+def tool_guard(
+    name: str,
+    *,
+    deps: ToolDeps | None = None,
+    spec: WriteSpec | None = None,
+) -> Callable[[Callable[P, Awaitable[R]]], Callable[P, Awaitable[R]]]:
+    """Обёртка инструмента.
+
+    - ``spec`` (инструменты записи): проверка политики и SendLimiter до вызова адаптера,
+      аудит-строка в stderr (без текстов, если не ``MAX_LOG_CONTENT``);
+    - наши исключения → ``ToolError`` с кодом и понятным текстом (``retry_after`` для флуда,
+      «войдите заново» для истёкшей сессии); прочие → общий текст без внутренностей.
+    """
 
     def deco(fn: Callable[P, Awaitable[R]]) -> Callable[P, Awaitable[R]]:
+        sig = inspect.signature(fn)
+
         @functools.wraps(fn)
         async def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+            bound: dict[str, Any] = {}
+            ok, err, reserved = False, None, 0
             try:
-                return await fn(*args, **kwargs)
+                if spec is not None:
+                    assert deps is not None
+                    ba = sig.bind(*args, **kwargs)
+                    ba.apply_defaults()
+                    bound = dict(ba.arguments)
+                    reserved = _check_spec(deps, spec, bound)
+                result = await fn(*args, **kwargs)
+                ok = True
+                return result
             except ToolError:
+                err = "tool_error"
                 raise
             except MaxMcpError as exc:
+                err = exc.code
+                if reserved and isinstance(exc, _REFUNDABLE):
+                    assert deps is not None
+                    deps.send_limiter.release(reserved)
                 log.info("tool=%s error=%s", name, exc.code)
-                raise ToolError(f"[{exc.code}] {exc.public_message}") from exc
+                raise ToolError(_error_text(exc)) from exc
             except Exception as exc:
+                err = "internal_error"
                 log.exception("tool=%s unexpected error", name)
                 raise ToolError(
                     "[internal_error] Внутренняя ошибка сервера max-mcp; подробности в его логе (stderr)."
                 ) from exc
+            finally:
+                if spec is not None and deps is not None:
+                    _audit(name, bound, ok, err, content=deps.settings.log_content)
 
         return wrapper
 
     return deco
+
+
+# отказ до/без отправки: слот лимита возвращается (таймаут/сетевая ошибка — нет: могло уйти)
+_REFUNDABLE = (Forbidden, InvalidArgument, NotFound, NotLoggedIn, SessionExpired)
+
+
+def _check_spec(deps: ToolDeps, spec: WriteSpec, bound: dict[str, Any]) -> int:
+    """Проверки политики и лимита; возвращает число занятых слотов SendLimiter."""
+    policy = deps.policy
+    if spec.join:
+        policy.check_join()
+    elif spec.no_chat:
+        policy.check_any_write()
+    if spec.read_chat is not None:
+        policy.check_read(int(bound[spec.read_chat]))
+    if spec.write_chat is not None:
+        policy.check_write(int(bound[spec.write_chat]))
+    if not spec.sends:
+        return 0
+    n = max(1, len(bound[spec.sends_per] or ()) if spec.sends_per else 1)
+    deps.send_limiter.check(n)
+    return n
 
 
 @dataclass
@@ -52,7 +166,12 @@ class ToolDeps:
     adapter: MaxAdapter
     policy: Policy
     settings: Settings
+    send_limiter: SendLimiter = field(default=None)  # type: ignore[assignment]
     _me_id: int | None = field(default=None, init=False)
+
+    def __post_init__(self) -> None:
+        if self.send_limiter is None:
+            self.send_limiter = SendLimiter.from_spec(self.settings.send_limit)
 
     @property
     def tz(self) -> tzinfo:

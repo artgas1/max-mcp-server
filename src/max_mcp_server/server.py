@@ -31,6 +31,7 @@ def make_policy(settings: Settings) -> Policy:
         read_allow=settings.read_allow,
         write_allow=settings.write_allow,
         deny=settings.deny,
+        allow_join=settings.allow_join,
     )
 
 

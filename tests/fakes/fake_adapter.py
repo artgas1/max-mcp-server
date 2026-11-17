@@ -23,6 +23,8 @@ from max_mcp_server.adapter.base import (
     MediaBlob,
     MemberDTO,
     MessageDTO,
+    OutgoingFile,
+    PollResultDTO,
     UserDTO,
 )
 from max_mcp_server.adapter.events import EventBuffer
@@ -180,6 +182,8 @@ def _group_messages() -> list[MessageDTO]:
 class FakeMaxAdapter:
     def __init__(self) -> None:
         self.calls: Counter[str] = Counter()
+        self.write_log: list[tuple[Any, ...]] = []
+        self._next_id = 900_000
         self._state: AdapterState = "ready"
         self._events = EventBuffer()
         self.logged_in = True
@@ -445,8 +449,166 @@ class FakeMaxAdapter:
 
     async def mark_read(self, chat_id: int, message_id: int) -> int:
         self.calls["mark_read"] += 1
+        self.write_log.append(("mark_read", chat_id, message_id))
         self.unread[chat_id] = 0
         return 0
+
+    def _new_message(self, chat_id: int, text: str, **kw: Any) -> MessageDTO:
+        self._next_id += 1
+        msgs = self.messages.setdefault(chat_id, [])
+        last = max((m.time_ms for m in msgs), default=NOW)
+        m = MessageDTO(
+            id=self._next_id, chat_id=chat_id, time_ms=last + 1000, text=text, sender_id=ME.id, **kw
+        )
+        msgs.append(m)
+        return m
+
+    async def send(
+        self,
+        chat_id: int,
+        text: str | None,
+        *,
+        reply_to: int | None = None,
+        notify: bool = True,
+        markdown: bool = False,
+        files: Sequence[OutgoingFile] = (),
+    ) -> MessageDTO:
+        self.calls["send"] += 1
+        self._check()
+        self.write_log.append(
+            ("send", chat_id, text, tuple((f.name, f.kind, len(f.data)) for f in files))
+        )
+        atts = tuple(
+            AttachmentDTO(kind=f.kind, index=i, name=f.name, size=len(f.data))
+            for i, f in enumerate(files)
+        )
+        return self._new_message(chat_id, text or "", reply_to=reply_to, attachments=atts)
+
+    async def forward(
+        self, to_chat_id: int, from_chat_id: int, message_ids: Sequence[int], *, notify: bool
+    ) -> list[MessageDTO]:
+        self.calls["forward"] += 1
+        self.write_log.append(("forward", to_chat_id, from_chat_id, tuple(message_ids)))
+        out = []
+        for src in await self.get_messages(from_chat_id, message_ids):
+            fwd = ForwardDTO(
+                chat_id=from_chat_id,
+                chat_title=self._chat(from_chat_id).title,
+                message_id=src.id,
+                sender_id=src.sender_id,
+                time_ms=src.time_ms,
+                text=src.text,
+            )
+            out.append(self._new_message(to_chat_id, "", forwarded_from=fwd, kind="forward"))
+        return out
+
+    async def edit(self, chat_id: int, message_id: int, text: str, *, markdown: bool) -> MessageDTO:
+        self.calls["edit"] += 1
+        self.write_log.append(("edit", chat_id, message_id))
+        msgs = self.messages[chat_id]
+        for i, m in enumerate(msgs):
+            if m.id == message_id:
+                msgs[i] = replace(m, text=text, edited=True)
+                return msgs[i]
+        raise NotFound("нет сообщения")
+
+    async def delete(self, chat_id: int, ids: Sequence[int], *, for_everyone: bool) -> bool:
+        self.calls["delete"] += 1
+        self.write_log.append(("delete", chat_id, tuple(ids), for_everyone))
+        wanted = set(ids)
+        self.messages[chat_id] = [m for m in self.messages.get(chat_id, []) if m.id not in wanted]
+        return True
+
+    async def react(
+        self, chat_id: int, message_id: int, reaction: str | None
+    ) -> tuple[tuple[tuple[str, int], ...], str | None]:
+        self.calls["react"] += 1
+        self.write_log.append(("react", chat_id, message_id, reaction))
+        return (((reaction, 1),) if reaction else ()), reaction
+
+    async def send_poll(
+        self, chat_id: int, question: str, answers: Sequence[str], *, revote: bool, notify: bool
+    ) -> MessageDTO:
+        self.calls["send_poll"] += 1
+        self.write_log.append(("send_poll", chat_id, question, tuple(answers), revote))
+        att = AttachmentDTO(
+            kind="poll",
+            index=0,
+            id="77",
+            extra={
+                "title": question,
+                "answers": [{"id": i + 1, "text": a, "votes": 0} for i, a in enumerate(answers)],
+            },
+        )
+        return self._new_message(chat_id, "", attachments=(att,))
+
+    async def vote_poll(
+        self, chat_id: int, message_id: int, answer_ids: Sequence[int]
+    ) -> PollResultDTO:
+        self.calls["vote_poll"] += 1
+        self.write_log.append(("vote_poll", chat_id, message_id, tuple(answer_ids)))
+        return PollResultDTO(total=1, answers=tuple((a, 1) for a in answer_ids))
+
+    async def pin(self, chat_id: int, message_id: int, *, notify: bool) -> bool:
+        self.calls["pin"] += 1
+        self.write_log.append(("pin", chat_id, message_id))
+        return True
+
+    async def send_comment(
+        self, chat_id: int, post_id: int, text: str, *, reply_to: int | None, markdown: bool
+    ) -> MessageDTO:
+        self.calls["send_comment"] += 1
+        self.write_log.append(("send_comment", chat_id, post_id, text))
+        self._next_id += 1
+        m = MessageDTO(
+            id=self._next_id,
+            chat_id=chat_id,
+            post_id=post_id,
+            time_ms=NOW,
+            text=text,
+            sender_id=ME.id,
+            reply_to=reply_to,
+        )
+        self.comments_by_post.setdefault((chat_id, post_id), []).append(m)
+        return m
+
+    async def create_group(self, title: str, user_ids: Sequence[int]) -> ChatDTO:
+        self.calls["create_group"] += 1
+        self.write_log.append(("create_group", title, tuple(user_ids)))
+        cid = -9000 - self.calls["create_group"]
+        self.messages[cid] = []
+        return replace(self._chat(cid), title=title)
+
+    async def add_members(
+        self, chat_id: int, user_ids: Sequence[int], *, show_history: bool
+    ) -> ChatDTO | None:
+        self.calls["add_members"] += 1
+        self.write_log.append(("add_members", chat_id, tuple(user_ids), show_history))
+        return self._chat(chat_id)
+
+    async def remove_members(self, chat_id: int, user_ids: Sequence[int]) -> bool:
+        self.calls["remove_members"] += 1
+        self.write_log.append(("remove_members", chat_id, tuple(user_ids)))
+        return True
+
+    async def update_group(
+        self, chat_id: int, *, title: str | None, description: str | None
+    ) -> None:
+        self.calls["update_group"] += 1
+        self.write_log.append(("update_group", chat_id, title, description))
+
+    async def join(self, link: str) -> ChatDTO:
+        self.calls["join"] += 1
+        self.write_log.append(("join", link))
+        return self._chat(-3003)
+
+    async def leave(self, chat_id: int) -> None:
+        self.calls["leave"] += 1
+        self.write_log.append(("leave", chat_id))
+
+    @property
+    def write_calls(self) -> int:
+        return len(self.write_log)
 
     # ----------------------------------------------------------- для тестов
 

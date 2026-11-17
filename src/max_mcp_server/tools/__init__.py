@@ -1,4 +1,4 @@
-"""Регистрация инструментов: чтение — всегда; запись — только при MAX_READ_ONLY=false (тред 3)."""
+"""Регистрация инструментов: чтение — всегда; запись — только при MAX_READ_ONLY=false."""
 
 from __future__ import annotations
 
@@ -14,12 +14,7 @@ def register_tools(server: MCPServer[Any], deps: ToolDeps) -> list[str]:
     register_read_tools(server, deps)
     names = list(READ_TOOL_NAMES)
     if not deps.policy.read_only:
-        # Инструменты записи появятся в треде 3 (tools/write.py). До тех пор сервер
-        # честно работает только на чтение даже при MAX_READ_ONLY=false.
-        try:
-            from max_mcp_server.tools import write  # type: ignore[attr-defined]
-        except ImportError:
-            pass
-        else:
-            names.extend(write.register_write_tools(server, deps))
+        from max_mcp_server.tools.write import register_write_tools
+
+        names.extend(register_write_tools(server, deps))
     return names
