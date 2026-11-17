@@ -56,6 +56,7 @@ class Settings(BaseSettings):
     rps: float = Field(default=5.0, gt=0, le=50)
     send_limit: str = "20/h,5/min"
     allow_join: bool = False
+    allow_create_group: bool = False
     untrusted_wrap: Literal["tags", "json", "off"] = "tags"
     text_limit: int = Field(default=4000, ge=100, le=100_000)
     tz: str | None = None

@@ -98,10 +98,6 @@ async def test_outside_write_allowlist_refused_without_adapter_call(
     before = sum(fake.calls.values())
     async with make_client(policy, upload_dir=tmp_path) as c:
         r = await c.call_tool(name, ARGS_OUTSIDE[name])
-    if name == "max_create_group":
-        # создание группы не привязано к чату: разрешено при READ_ONLY=false
-        assert not r.is_error
-        return
     assert "[forbidden]" in error_text(r)
     assert fake.write_log == []
     assert sum(fake.calls.values()) == before  # ни одного обращения к адаптеру
@@ -296,7 +292,8 @@ async def test_poll_validation(make_client, fake):
 
 
 async def test_comment_and_groups(make_client, fake):
-    async with make_client(RW) as c:
+    rw_create = Policy(read_only=False, write_allow=WRITABLE, allow_create_group=True)
+    async with make_client(rw_create) as c:
         p = payload(
             await c.call_tool(
                 "max_send_comment", {"chat_id": CHANNEL_ID, "post_id": 300009, "text": "ок"}
@@ -329,6 +326,37 @@ async def test_comment_and_groups(make_client, fake):
         "update_group",
         "leave",
     ]
+
+
+@pytest.mark.parametrize(
+    "policy",
+    [
+        Policy(read_only=False),  # пустой write-allowlist (PoC poc_policy.py)
+        Policy(read_only=False, write_allow=WRITABLE),  # allowlist без явного разрешения
+    ],
+)
+async def test_create_group_requires_explicit_permission(make_client, fake, policy):
+    """M4: max_create_group без MAX_ALLOW_CREATE_GROUP и без MAX_WRITE_CHATS=* → forbidden."""
+    before = sum(fake.calls.values())
+    async with make_client(policy) as c:
+        r = await c.call_tool("max_create_group", {"title": "x", "user_ids": [ALICE.id, 2003]})
+    assert "[forbidden]" in error_text(r) and "MAX_ALLOW_CREATE_GROUP" in error_text(r)
+    assert fake.write_log == [] and sum(fake.calls.values()) == before
+
+
+def test_create_group_policy_matrix():
+    from max_mcp_server.config import load_settings
+    from max_mcp_server.server import make_policy
+
+    assert not make_policy(load_settings(read_only=False, write_chats="")).can_create_chats
+    assert not make_policy(load_settings(read_only=False, write_chats="1")).can_create_chats
+    assert make_policy(load_settings(read_only=False, write_chats="*")).can_create_chats
+    assert make_policy(
+        load_settings(read_only=False, write_chats="", allow_create_group=True)
+    ).can_create_chats
+    assert not make_policy(
+        load_settings(read_only=True, write_chats="*", allow_create_group=True)
+    ).can_create_chats
 
 
 async def test_join_requires_flag(make_client, fake):

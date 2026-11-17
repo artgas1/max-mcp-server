@@ -5,6 +5,8 @@
 - read-allowlist пуст → читать можно все чаты (кроме deny);
 - write-allowlist пуст → писать нельзя **никуда**, даже при ``MAX_READ_ONLY=false``;
   ``*`` — явное «все чаты» (кроме deny);
+- действия без существующего чата (создание группы) требуют отдельного разрешения:
+  ``MAX_ALLOW_CREATE_GROUP=true`` или ``MAX_WRITE_CHATS=*`` (пустой allowlist их тоже запрещает);
 - запись в чат требует, чтобы он был и читаемым: иначе модель могла бы писать в чат, который
   ей не разрешено видеть (и, например, удалять там сообщения вслепую).
 """
@@ -27,6 +29,7 @@ class Policy:
     write_allow: frozenset[int] | Literal["*"] = field(default_factory=frozenset)  # пусто = никакие
     deny: frozenset[int] = field(default_factory=frozenset)
     allow_join: bool = False
+    allow_create_group: bool = False
 
     # ----------------------------------------------------------------- чтение
 
@@ -83,10 +86,20 @@ class Policy:
         if not self.allow_join:
             raise Forbidden("Вступление в чаты выключено (MAX_ALLOW_JOIN=false)")
 
+    @property
+    def can_create_chats(self) -> bool:
+        return not self.read_only and (self.allow_create_group or self.write_allow == "*")
+
     def check_any_write(self) -> None:
-        """Для действий без существующего чата (создание группы)."""
+        """Для действий без существующего чата (создание группы): нужен явный
+        ``MAX_ALLOW_CREATE_GROUP=true`` или ``MAX_WRITE_CHATS=*``."""
         if self.read_only:
             raise Forbidden("Сервер работает только на чтение (MAX_READ_ONLY=true)")
+        if not self.can_create_chats:
+            raise Forbidden(
+                "Создание групп выключено: задайте MAX_ALLOW_CREATE_GROUP=true "
+                "(или MAX_WRITE_CHATS=*)"
+            )
 
     def summary(self) -> dict[str, object]:
         """Для max_get_me: только счётчики, без самих id."""
@@ -96,4 +109,5 @@ class Policy:
             "write_allowlist": "all" if self.write_allow == "*" else len(self.write_allow),
             "deny_list": len(self.deny),
             "allow_join": self.allow_join,
+            "allow_create_group": self.can_create_chats,
         }

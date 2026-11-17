@@ -32,6 +32,7 @@ def make_policy(settings: Settings) -> Policy:
         write_allow=settings.write_allow,
         deny=settings.deny,
         allow_join=settings.allow_join,
+        allow_create_group=settings.allow_create_group,
     )
 
 
